@@ -1,0 +1,24 @@
+// Music Player Variables
+:root {
+  --music-main-active: #62c28a;
+  --music-main-bg: #fff;
+  --mask-bg: rgba(0, 0, 0, 0.5);
+  --shadow-button-bg: rgba(210, 210, 210, 0.5);
+  --card-bg: #fff;
+  --card-box-shadow: 0 3px 6px 3px rgba(7, 17, 27, 0.06);
+  --card-hover-box-shadow: 0 3px 6px 3px rgba(7, 17, 27, 0.15);
+  --chat-bg: #e6e6e6;
+  --global-gradient: #fff;
+  --header-bg: rgba(29, 30, 31, 0.5);
+  --home-bg: #303030;
+  --home-mask-color: rgba(0, 0, 0, 0.2);
+  --font-color: #4b4948;
+}
+
+html.dark {
+  --font-color: #b8b8b8;
+  --global-gradient: #282828;
+  --card-bg: #303030;
+  --shadow-button-bg: rgba(0, 0, 0, 0.2);
+  --home-bg: #282828;
+}
