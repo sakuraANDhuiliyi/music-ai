@@ -12,6 +12,10 @@ const ProjectSchema = new mongoose.Schema({
     },
     status: { type: String, enum: ['draft', 'published'], default: 'published' },
     projectData: { type: mongoose.Schema.Types.Mixed, default: null, select: false },
+    forkParent: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null },
+    forkRoot: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null },
+    forkFromVersionId: { type: String, default: '' },
+    headVersionId: { type: String, default: '' },
 
     // 存储点赞了该作品的所有用户 ID
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
@@ -20,6 +24,9 @@ const ProjectSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
 });
+
+ProjectSchema.index({ forkParent: 1, createdAt: -1 });
+ProjectSchema.index({ forkRoot: 1, createdAt: -1 });
 
 // 让前端能拿到 id 而不是 _id, 并计算 likesCount
 ProjectSchema.set('toJSON', {

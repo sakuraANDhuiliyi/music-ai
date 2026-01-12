@@ -8,13 +8,21 @@ import MidiPianoRoll from '../components/editor/MidiPianoRoll.vue';
 import UiButton from '../components/UiButton.vue';
 import { createMockProject } from '../components/editor/mockProject.js';
 import { computePeaks } from '../audio/peaks.js';
+import { renderProjectToWavFile } from '../audio/mixdown.js';
 import AudioEngine from '../audio/AudioEngine.js';
 import MidiEngine from '../audio/MidiEngine.js';
 import { getSharedAudioContext } from '../audio/sharedAudioContext.js';
 import { notifyPlaybackStop, registerPlaybackSource, requestPlaybackStart } from '../audio/playbackCoordinator.js';
 import { noteToMidi } from '../utils/musicNotes.js';
 import { loadProjectDraft, saveProjectDraft } from '../utils/projectStorage.js';
-import { apiCreateProjectDraft, apiGetProjectSource, apiPublishProject, apiUpdateProjectDraft, isMongoObjectId } from '../api/projects.js';
+import {
+  apiCreateProjectDraft,
+  apiGetProjectSource,
+  apiPublishProject,
+  apiUpdateProjectDraft,
+  apiUploadAudioFile,
+  isMongoObjectId,
+} from '../api/projects.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -50,6 +58,7 @@ const publishCover = ref('');
 const publishTagsText = ref('');
 const publishAudioFile = ref(null);
 const isPublishing = ref(false);
+const isRenderingPreview = ref(false);
 
 const clipboardToast = ref('');
 const clipboardToastTone = ref('ok');
@@ -563,6 +572,7 @@ const sanitizeProject = (value) => {
     fork: {
       parentProjectId: fork?.parentProjectId ?? null,
       rootProjectId: fork?.rootProjectId ?? null,
+      forkFromVersionId: fork?.forkFromVersionId ?? null,
       versionId: fork?.versionId ?? null,
     },
   };
@@ -1411,6 +1421,59 @@ const onPickPublishAudio = (e) => {
   if (e?.target) e.target.value = '';
 };
 
+const uploadLocalAudioAssets = async () => {
+  const assets = Array.isArray(project.value?.assets) ? project.value.assets : [];
+  for (const a of assets) {
+    if (String(a?.type || '') !== 'audio') continue;
+    const id = String(a?.id || '');
+    if (!id) continue;
+    const file = localAudioFilesByAssetId.get(id) || null;
+    if (!file) continue;
+
+    const uploaded = await apiUploadAudioFile(file);
+    const url = String(uploaded?.url || '').trim();
+    if (!url) continue;
+
+    // Patch runtime asset in-place so later autosaves keep remote URLs.
+    a.url = url;
+    a.hash = `upload:${String(uploaded?.filename || file.name || '')}:${Number(uploaded?.size || file.size || 0)}`;
+  }
+};
+
+const generatePreviewIfNeeded = async () => {
+  if (publishAudioFile.value) return;
+  isRenderingPreview.value = true;
+  try {
+    const file = await renderProjectToWavFile(project.value, {
+      filename: 'preview.wav',
+      sampleRate: 44100,
+      filesByAssetId: localAudioFilesByAssetId,
+      maxDurationSec: 600,
+    });
+    publishAudioFile.value = file;
+  } finally {
+    isRenderingPreview.value = false;
+  }
+};
+
+const generatePreviewNow = async () => {
+  if (isRenderingPreview.value) return;
+  isRenderingPreview.value = true;
+  try {
+    const file = await renderProjectToWavFile(project.value, {
+      filename: 'preview.wav',
+      sampleRate: 44100,
+      filesByAssetId: localAudioFilesByAssetId,
+      maxDurationSec: 600,
+    });
+    publishAudioFile.value = file;
+  } catch (e) {
+    alert(e?.message || '生成试听失败');
+  } finally {
+    isRenderingPreview.value = false;
+  }
+};
+
 const publishNow = async () => {
   if (!hasToken()) return;
   const title = String(publishTitle.value || '').trim();
@@ -1423,6 +1486,9 @@ const publishNow = async () => {
   try {
     project.value.meta.title = title;
     touch();
+
+    await uploadLocalAudioAssets();
+    await generatePreviewIfNeeded();
 
     const payload = serializeProjectForStorage(project.value);
     const durationSec = estimateDurationSec();
@@ -1624,8 +1690,19 @@ onBeforeUnmount(() => {
           <div>
             <div class="text-xs text-slate-500 font-semibold mb-1">试听音频（建议上传 wav/mp3）</div>
             <input type="file" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3" class="w-full text-sm" @change="onPickPublishAudio" />
-            <div class="mt-1 text-[11px] text-slate-500 font-semibold">
-              {{ publishAudioFile ? `已选择：${publishAudioFile.name}` : '未选择音频：仍可发布，但社区将缺少试听音频' }}
+            <div class="mt-2 flex items-center justify-between gap-3">
+              <div class="text-[11px] text-slate-500 font-semibold">
+                {{ publishAudioFile ? `已选择：${publishAudioFile.name}` : '未生成试听：发布时会自动生成一个 wav' }}
+              </div>
+              <UiButton
+                variant="secondary"
+                class="px-3 py-2 rounded-lg text-xs font-semibold"
+                :disabled="isRenderingPreview || isPublishing"
+                @click="generatePreviewNow"
+              >
+                <i v-if="isRenderingPreview" class="ph-bold ph-spinner animate-spin"></i>
+                {{ isRenderingPreview ? '生成中...' : '生成试听' }}
+              </UiButton>
             </div>
           </div>
         </div>

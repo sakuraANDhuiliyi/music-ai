@@ -26,6 +26,7 @@ export function createMockProject(projectId = 'proj_demo') {
     fork: {
       parentProjectId: null,
       rootProjectId: null,
+      forkFromVersionId: null,
       versionId: 'v1',
     },
   };

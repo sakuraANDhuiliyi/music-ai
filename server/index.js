@@ -19,6 +19,7 @@ import RecommendationItem from './models/RecommendationItem.js';
 import PlayEvent from './models/PlayEvent.js';
 import UserProfile from './models/UserProfile.js';
 import DailyRecommendation from './models/DailyRecommendation.js';
+import ProjectVersion from './models/ProjectVersion.js';
 
 const SERVER_CONFIG = {
     port: Number(process.env.PORT || 3000),
@@ -64,6 +65,8 @@ const normalizeMessageSettings = (settings) => ({
 });
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(String(id || ''));
+const createVersionId = () =>
+    `v_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
 const normalizeStringArray = (val, max = 24) => {
     if (!Array.isArray(val)) return [];
     return val
@@ -1831,6 +1834,7 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
         const userId = String(req.user.uid);
         const title = String(req.body?.title || '').trim();
         const cover = String(req.body?.cover || '').trim();
+        const audioKind = String(req.body?.audioKind || 'stem').trim() || 'stem';
         const tags = (() => {
             const raw = req.body?.tags;
             if (!raw) return [];
@@ -1867,14 +1871,16 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
             }
             : { durationSec: Math.max(0, Number(req.body?.durationSec) || 0), size: 0, mime: '' };
 
-        // Patch projectData to reference the uploaded audioUrl (so re-open can load audio).
+        // Keep projectData editable (stems are expected to be uploaded separately by the client).
+        // Backward-compatible behavior: if audioKind=stem, patch the first local audio asset url.
         try {
-            if (audioUrl && projectData && typeof projectData === 'object') {
-                if (projectData.meta && typeof projectData.meta === 'object') {
-                    projectData.meta.title = title;
-                    projectData.meta.updatedAt = new Date().toISOString();
-                }
-
+            if (projectData && typeof projectData === 'object' && projectData.meta && typeof projectData.meta === 'object') {
+                projectData.meta.title = title;
+                projectData.meta.updatedAt = new Date().toISOString();
+            }
+        } catch { }
+        try {
+            if (audioKind === 'stem' && audioUrl && projectData && typeof projectData === 'object') {
                 const assets = Array.isArray(projectData.assets) ? projectData.assets.slice() : [];
                 const prefer = (a) => {
                     if (!a || typeof a !== 'object') return false;
@@ -1896,9 +1902,7 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
                     projectData.assets = assets;
                 }
             }
-        } catch {
-            // ignore
-        }
+        } catch { }
 
         const incomingId = String(req.body?.projectId || '').trim();
         let project = null;
@@ -1922,6 +1926,31 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
         project.updatedAt = new Date();
 
         await project.save();
+
+        // Version tracking: create a new publish version and move head.
+        try {
+            const versionId = createVersionId();
+            await ProjectVersion.create({
+                project: project._id,
+                versionId,
+                parentVersionId: String(project.headVersionId || ''),
+                kind: 'publish',
+                author: userId,
+                projectData,
+            });
+            project.headVersionId = versionId;
+            try {
+                if (project.projectData && typeof project.projectData === 'object') {
+                    project.projectData.fork = project.projectData.fork && typeof project.projectData.fork === 'object'
+                        ? project.projectData.fork
+                        : {};
+                    project.projectData.fork.versionId = versionId;
+                }
+            } catch { }
+            await project.save();
+        } catch {
+            // ignore version failures (MVP)
+        }
 
         // 通知关注者：你关注的人发布了新作品
         if (!incomingId) {
@@ -1959,6 +1988,150 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
 
         const populated = await Project.findById(project._id).populate('author', 'username avatar');
         res.status(201).json(populated || project);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Fork：从公开作品复制一个可编辑草稿（记录谱系 + 版本来源）
+app.post('/api/projects/:id/fork', auth, async (req, res) => {
+    try {
+        const me = String(req.user.uid);
+        const sourceId = String(req.params.id || '');
+        if (!isValidObjectId(sourceId)) return res.status(400).json({ message: 'Invalid project id' });
+
+        const source = await Project.findById(sourceId).select('+projectData').populate('author', 'username avatar');
+        if (!source) return res.status(404).json({ message: '作品不存在' });
+        const isPublished = String(source.status || 'published') === 'published';
+        if (!isPublished) return res.status(404).json({ message: '作品不存在' });
+
+        const rootId = source.forkRoot ? String(source.forkRoot) : String(source._id);
+        const fromVersionId = String(source.headVersionId || '');
+
+        let cloned = null;
+        try {
+            cloned = source.projectData ? JSON.parse(JSON.stringify(source.projectData)) : null;
+        } catch {
+            cloned = null;
+        }
+        if (!cloned || typeof cloned !== 'object') cloned = {};
+
+        const nowIso = new Date().toISOString();
+        cloned.meta = cloned.meta && typeof cloned.meta === 'object' ? cloned.meta : {};
+        cloned.meta.title = String(cloned.meta.title || source.title || '').trim() || 'Untitled';
+        cloned.meta.owner = me;
+        cloned.meta.createdAt = nowIso;
+        cloned.meta.updatedAt = nowIso;
+
+        cloned.fork = cloned.fork && typeof cloned.fork === 'object' ? cloned.fork : {};
+        cloned.fork.parentProjectId = sourceId;
+        cloned.fork.rootProjectId = rootId;
+        cloned.fork.forkFromVersionId = fromVersionId || null;
+
+        const child = await Project.create({
+            title: `Fork - ${String(source.title || 'Untitled')}`.slice(0, 80),
+            author: me,
+            cover: String(source.cover || ''),
+            tags: Array.isArray(source.tags) ? source.tags.slice(0, 10) : [],
+            status: 'draft',
+            projectData: cloned,
+            forkParent: source._id,
+            forkRoot: isValidObjectId(rootId) ? rootId : source._id,
+            forkFromVersionId: fromVersionId,
+            updatedAt: new Date(),
+        });
+
+        // Patch meta.id to the new draft id
+        try {
+            const next = await Project.findById(child._id).select('+projectData');
+            if (next?.projectData && typeof next.projectData === 'object') {
+                next.projectData.meta = next.projectData.meta && typeof next.projectData.meta === 'object' ? next.projectData.meta : {};
+                next.projectData.meta.id = String(child._id);
+                next.projectData.fork = next.projectData.fork && typeof next.projectData.fork === 'object' ? next.projectData.fork : {};
+                next.projectData.fork.parentProjectId = sourceId;
+                next.projectData.fork.rootProjectId = rootId;
+                next.projectData.fork.forkFromVersionId = fromVersionId || null;
+                await next.save();
+            }
+        } catch {
+            // ignore
+        }
+
+        // Create fork version head.
+        try {
+            const versionId = createVersionId();
+            await ProjectVersion.create({
+                project: child._id,
+                versionId,
+                parentVersionId: fromVersionId,
+                kind: 'fork',
+                author: me,
+                projectData: cloned,
+            });
+            await Project.findByIdAndUpdate(child._id, { headVersionId: versionId });
+            try {
+                const doc = await Project.findById(child._id).select('+projectData');
+                if (doc?.projectData && typeof doc.projectData === 'object') {
+                    doc.projectData.fork = doc.projectData.fork && typeof doc.projectData.fork === 'object' ? doc.projectData.fork : {};
+                    doc.projectData.fork.versionId = versionId;
+                    await doc.save();
+                }
+            } catch { }
+        } catch {
+            // ignore
+        }
+
+        const populated = await Project.findById(child._id).populate('author', 'username avatar');
+        res.status(201).json({ id: String(child._id), project: populated || child, parentId: sourceId, rootId });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 公开接口：获取作品 Fork 谱系（parent + children）
+app.get('/api/projects/:id/lineage', optionalAuth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+
+        const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
+
+        const project = await Project.findById(id).select('forkParent forkRoot author status');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+
+        const isOwner = req.user?.uid && String(project.author) === String(req.user.uid);
+        const isPublished = String(project.status || 'published') === 'published';
+        if (!isPublished && !isOwner) return res.status(404).json({ message: '作品不存在' });
+
+        const filterPublished = { $or: [{ status: 'published' }, { status: { $exists: false } }] };
+        const authorFilter = blockedIds.length ? { author: { $nin: blockedIds } } : {};
+
+        let parent = null;
+        if (project.forkParent) {
+            parent = await Project.findOne({
+                _id: project.forkParent,
+                ...filterPublished,
+                ...authorFilter,
+            })
+                .populate('author', 'username avatar')
+                .select('title cover author audioUrl createdAt');
+        }
+
+        const children = await Project.find({
+            forkParent: project._id,
+            ...filterPublished,
+            ...authorFilter,
+        })
+            .populate('author', 'username avatar')
+            .select('title cover author audioUrl createdAt')
+            .sort({ createdAt: -1 })
+            .limit(18);
+
+        res.json({
+            parent,
+            rootId: project.forkRoot ? String(project.forkRoot) : String(project._id),
+            children,
+        });
     } catch (err) {
         res.status(500).json({ message: 'Error' });
     }

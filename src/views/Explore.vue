@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
+import { apiForkProject } from '../api/projects.js';
 const router = useRouter();
 const { user } = useUser();
 const projects = ref([]);
@@ -124,11 +125,27 @@ const goToDetail = (project) => {
 };
 
 const forkProject = (project) => {
-  forkToast.value = `已复制作品《${project.title}》`;
+  if (!user.value) return router.push('/login');
+  const id = project?.id;
+  if (!id) return;
+
+  forkToast.value = 'Fork 中...';
   if (forkTimer) window.clearTimeout(forkTimer);
-  forkTimer = window.setTimeout(() => {
-    forkToast.value = '';
-  }, 1800);
+
+  apiForkProject(id)
+    .then((data) => {
+      const newId = String(data?.id || '').trim();
+      forkToast.value = `已 Fork：${project.title}`;
+      if (newId) router.push({ name: 'Studio', params: { projectId: newId } });
+    })
+    .catch((e) => {
+      forkToast.value = e?.message || 'Fork 失败';
+    })
+    .finally(() => {
+      forkTimer = window.setTimeout(() => {
+        forkToast.value = '';
+      }, 1800);
+    });
 };
 
 const openComments = async (project) => {

@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
+import { apiForkProject, apiGetProjectLineage } from '../api/projects.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -29,6 +30,9 @@ const isOwner = computed(() => {
   if (!me || !authorId) return false;
   return String(me) === String(authorId);
 });
+
+const lineage = ref({ parent: null, children: [], rootId: '' });
+const lineageError = ref('');
 
 const comments = ref([]);
 const isCommentsLoading = ref(true);
@@ -77,6 +81,33 @@ function goToEditor() {
   if (!projectId.value) return;
   if (!user.value) return router.push('/login');
   router.push({ name: 'Studio', params: { projectId: projectId.value } });
+}
+
+async function forkThisProject() {
+  if (!projectId.value) return;
+  if (!user.value) return router.push('/login');
+  try {
+    const data = await apiForkProject(projectId.value);
+    const newId = String(data?.id || '').trim();
+    if (newId) router.push({ name: 'Studio', params: { projectId: newId } });
+  } catch (e) {
+    alert(e?.message || 'Fork 失败');
+  }
+}
+
+async function fetchLineage() {
+  lineageError.value = '';
+  if (!projectId.value) return;
+  try {
+    const data = await apiGetProjectLineage(projectId.value);
+    lineage.value = {
+      parent: data?.parent || null,
+      children: Array.isArray(data?.children) ? data.children : [],
+      rootId: String(data?.rootId || ''),
+    };
+  } catch (e) {
+    lineageError.value = e?.message || '加载谱系失败';
+  }
 }
 
 async function scrollToComment(commentId) {
@@ -137,6 +168,7 @@ async function fetchProject() {
     project.value = await res.json();
 
     hydrateProjectMeta();
+    await fetchLineage();
   } catch (e) {
     projectError.value = '加载作品失败，请稍后重试';
   } finally {
@@ -421,19 +453,67 @@ watch(
                 </UiButton>
               </div>
 
-              <UiButton
-                v-if="isOwner"
-                @click="goToEditor"
-                variant="secondary"
-                class="mt-3 w-full px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
-              >
-                <i class="ph-bold ph-pencil-simple"></i>
-                继续编辑
-              </UiButton>
+              <div class="mt-3 flex gap-3">
+                <UiButton
+                  v-if="!isOwner"
+                  @click="forkThisProject"
+                  variant="secondary"
+                  class="flex-1 px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+                >
+                  <i class="ph-bold ph-git-fork"></i>
+                  Fork
+                </UiButton>
+
+                <UiButton
+                  v-if="isOwner"
+                  @click="goToEditor"
+                  variant="secondary"
+                  class="flex-1 px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+                >
+                  <i class="ph-bold ph-pencil-simple"></i>
+                  继续编辑
+                </UiButton>
+              </div>
 
               <div v-if="project.audioUrl" class="mt-5">
                 <div class="text-xs text-slate-500 font-semibold mb-2">试听</div>
                 <audio :src="project.audioUrl" controls class="w-full"></audio>
+              </div>
+
+              <div v-if="lineage?.parent" class="mt-6 bg-white/55 border border-white/70 rounded-xl p-4 backdrop-blur-xl">
+                <div class="text-xs text-slate-500 font-semibold mb-2">Fork 自</div>
+                <button
+                  type="button"
+                  class="w-full flex items-center gap-3 text-left hover:bg-white/30 rounded-lg px-2 py-2 transition"
+                  @click="router.push({ name: 'ProjectDetail', params: { id: lineage.parent.id } })"
+                >
+                  <div class="w-10 h-10 rounded-xl border border-white/70" :style="{ background: lineage.parent.cover || coverFallback() }"></div>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm font-extrabold text-slate-900 truncate">{{ lineage.parent.title }}</div>
+                    <div class="text-xs text-slate-500 font-semibold truncate">@{{ lineage.parent.author?.username || '匿名用户' }}</div>
+                  </div>
+                  <i class="ph-bold ph-caret-right text-slate-500"></i>
+                </button>
+              </div>
+
+              <div v-if="lineage?.children?.length" class="mt-4">
+                <div class="text-xs text-slate-500 font-semibold mb-2">Fork 出的作品</div>
+                <div class="space-y-2">
+                  <button
+                    v-for="c in lineage.children"
+                    :key="c.id"
+                    type="button"
+                    class="w-full flex items-center gap-3 text-left bg-white/45 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl hover:bg-white/60 transition"
+                    @click="router.push({ name: 'ProjectDetail', params: { id: c.id } })"
+                  >
+                    <div class="w-10 h-10 rounded-xl border border-white/70" :style="{ background: c.cover || coverFallback() }"></div>
+                    <div class="min-w-0 flex-1">
+                      <div class="text-sm font-extrabold text-slate-900 truncate">{{ c.title }}</div>
+                      <div class="text-xs text-slate-500 font-semibold truncate">@{{ c.author?.username || '匿名用户' }}</div>
+                    </div>
+                    <i class="ph-bold ph-caret-right text-slate-500"></i>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
