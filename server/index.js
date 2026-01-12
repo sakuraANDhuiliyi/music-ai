@@ -685,7 +685,12 @@ const audioStorage = multer.diskStorage({
 });
 const audioUpload = multer({
     storage: audioStorage,
-    limits: { fileSize: 25 * 1024 * 1024 } // 25MB
+    limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+    fileFilter: (req, file, cb) => {
+        const mime = String(file?.mimetype || '').toLowerCase();
+        if (mime.startsWith('audio/')) return cb(null, true);
+        return cb(new Error('仅支持音频文件'));
+    },
 });
 
 // 数据库连接
@@ -1513,6 +1518,17 @@ app.post('/api/upload', auth, upload.single('file'), (req, res) => {
     res.json({ url: `${baseUrl}/uploads/${req.file.filename}` });
 });
 
+app.post('/api/upload/audio', auth, audioUpload.single('file'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: '无文件' });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json({
+        url: `${baseUrl}/uploads/${req.file.filename}`,
+        size: Number(req.file.size || 0),
+        mime: String(req.file.mimetype || ''),
+        filename: String(req.file.filename || ''),
+    });
+});
+
 // 音频 -> 键位文字谱（低配友好：HPSS + piptrack）
 app.post('/api/audio-to-sheet', auth, audioUpload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: '无文件' });
@@ -1723,10 +1739,238 @@ app.delete('/api/notifications', auth, async (req, res) => {
         res.status(500).json({ message: 'Error' });
     }
 });
+// 获取工程文件（编辑器读取，仅作者可见）
+app.get('/api/projects/:id/source', auth, async (req, res) => {
+    try {
+        const project = await Project.findById(req.params.id)
+            .select('+projectData')
+            .populate('author', 'username avatar');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author?._id || project.author) !== String(req.user.uid)) {
+            return res.status(403).json({ message: '无权限' });
+        }
+        res.json({
+            project: project.projectData,
+            meta: {
+                id: project._id,
+                title: project.title,
+                cover: project.cover,
+                tags: project.tags || [],
+                status: project.status,
+                updatedAt: project.updatedAt,
+            },
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 保存草稿（编辑器自动保存）
+app.post('/api/projects/draft', auth, async (req, res) => {
+    try {
+        const payload = req.body || {};
+        const projectData = payload.project || payload.projectData || null;
+        const title = String(payload.title || projectData?.meta?.title || '').trim() || 'Untitled';
+        const cover = String(payload.cover || '').trim();
+        const tags = Array.isArray(payload.tags)
+            ? payload.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 10)
+            : [];
+
+        const project = await Project.create({
+            title,
+            author: String(req.user.uid),
+            cover,
+            tags,
+            status: 'draft',
+            projectData,
+            updatedAt: new Date(),
+        });
+
+        const populated = await Project.findById(project._id).populate('author', 'username avatar');
+        res.status(201).json(populated || project);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 更新草稿（编辑器自动保存）
+app.put('/api/projects/:id/draft', auth, async (req, res) => {
+    try {
+        const project = await Project.findById(req.params.id).select('+projectData');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author) !== String(req.user.uid)) {
+            return res.status(403).json({ message: '无权限' });
+        }
+
+        const payload = req.body || {};
+        const projectData = payload.project || payload.projectData || null;
+        if (projectData) project.projectData = projectData;
+        if (payload.title != null) project.title = String(payload.title || '').trim() || project.title;
+        if (payload.cover != null) project.cover = String(payload.cover || '').trim();
+        if (payload.tags != null) {
+            project.tags = Array.isArray(payload.tags)
+                ? payload.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 10)
+                : project.tags;
+        }
+        if (payload.status === 'published' || payload.status === 'draft') {
+            project.status = payload.status;
+        }
+        project.updatedAt = new Date();
+
+        await project.save();
+        const populated = await Project.findById(project._id).populate('author', 'username avatar');
+        res.json(populated || project);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 发布作品（含工程文件 + 试听音频）
+app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req, res) => {
+    try {
+        const userId = String(req.user.uid);
+        const title = String(req.body?.title || '').trim();
+        const cover = String(req.body?.cover || '').trim();
+        const tags = (() => {
+            const raw = req.body?.tags;
+            if (!raw) return [];
+            if (Array.isArray(raw)) return raw.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 10);
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return parsed.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 10);
+            } catch { }
+            return String(raw || '')
+                .split(/[,，\s]+/g)
+                .map((t) => String(t || '').trim())
+                .filter(Boolean)
+                .slice(0, 10);
+        })();
+
+        if (!title) return res.status(400).json({ message: '标题不能为空' });
+
+        let projectData = null;
+        try {
+            projectData = req.body?.project ? JSON.parse(req.body.project) : null;
+        } catch {
+            projectData = null;
+        }
+        if (!projectData) return res.status(400).json({ message: '工程文件缺失或格式错误' });
+
+        const audioFile = req.file || null;
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const audioUrl = audioFile ? `${baseUrl}/uploads/${audioFile.filename}` : '';
+        const audioMeta = audioFile
+            ? {
+                durationSec: Math.max(0, Number(req.body?.durationSec) || 0),
+                size: Number(audioFile.size || 0),
+                mime: String(audioFile.mimetype || ''),
+            }
+            : { durationSec: Math.max(0, Number(req.body?.durationSec) || 0), size: 0, mime: '' };
+
+        // Patch projectData to reference the uploaded audioUrl (so re-open can load audio).
+        try {
+            if (audioUrl && projectData && typeof projectData === 'object') {
+                if (projectData.meta && typeof projectData.meta === 'object') {
+                    projectData.meta.title = title;
+                    projectData.meta.updatedAt = new Date().toISOString();
+                }
+
+                const assets = Array.isArray(projectData.assets) ? projectData.assets.slice() : [];
+                const prefer = (a) => {
+                    if (!a || typeof a !== 'object') return false;
+                    if (String(a.type || '') !== 'audio') return false;
+                    const url = String(a.url || '');
+                    const hash = String(a.hash || '');
+                    return url.startsWith('blob:') || hash.startsWith('local:') || !url;
+                };
+                let idx = assets.findIndex(prefer);
+                if (idx === -1) idx = assets.findIndex((a) => a && typeof a === 'object' && String(a.type || '') === 'audio');
+                if (idx !== -1) {
+                    const prev = assets[idx] || {};
+                    assets[idx] = {
+                        ...prev,
+                        url: audioUrl,
+                        hash: `upload:${String(audioFile?.filename || '')}:${Number(audioMeta.size || 0)}`,
+                        duration: prev?.duration != null ? Number(prev.duration) : Number(audioMeta.durationSec || 0),
+                    };
+                    projectData.assets = assets;
+                }
+            }
+        } catch {
+            // ignore
+        }
+
+        const incomingId = String(req.body?.projectId || '').trim();
+        let project = null;
+        if (incomingId && mongoose.Types.ObjectId.isValid(incomingId)) {
+            project = await Project.findById(incomingId).select('+projectData');
+            if (!project) return res.status(404).json({ message: '作品不存在' });
+            if (String(project.author) !== userId) return res.status(403).json({ message: '无权限' });
+        }
+
+        if (!project) {
+            project = new Project({ author: userId });
+        }
+
+        project.title = title;
+        project.cover = cover;
+        project.tags = tags;
+        project.status = 'published';
+        project.projectData = projectData;
+        if (audioUrl) project.audioUrl = audioUrl;
+        project.audioMeta = audioMeta;
+        project.updatedAt = new Date();
+
+        await project.save();
+
+        // 通知关注者：你关注的人发布了新作品
+        if (!incomingId) {
+            try {
+                const authorDoc = await User.findById(userId).select('blockedUsers');
+                const authorBlocked = (authorDoc?.blockedUsers || []).map((id) => String(id));
+
+                const followers = await User.find({
+                    following: userId,
+                    blockedUsers: { $ne: userId },
+                    ...(authorBlocked.length ? { _id: { $nin: authorBlocked } } : {}),
+                }).select('_id');
+
+                const recipients = [];
+                for (const f of followers || []) {
+                    const rid = String(f._id);
+                    const ok = await canSendNotification(rid, 'system', userId);
+                    if (ok) recipients.push(rid);
+                }
+
+                if (recipients.length) {
+                    await Notification.insertMany(
+                        recipients.map((rid) => ({
+                            recipient: rid,
+                            sender: userId,
+                            type: 'followed_project',
+                            project: project._id,
+                        }))
+                    );
+                }
+            } catch {
+                // ignore notify failures
+            }
+        }
+
+        const populated = await Project.findById(project._id).populate('author', 'username avatar');
+        res.status(201).json(populated || project);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
 // 公开接口：获取作品列表
 app.get('/api/projects', optionalAuth, async (req, res) => {
     const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
-    const query = blockedIds.length ? { author: { $nin: blockedIds } } : {};
+    const query = {
+        $or: [{ status: 'published' }, { status: { $exists: false } }],
+        ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
+    };
     const projects = await Project.find(query).populate('author', 'username avatar').sort({ createdAt: -1 });
     res.json(projects);
 });
@@ -1739,10 +1983,23 @@ app.post('/api/projects', auth, async (req, res) => {
         const tags = Array.isArray(req.body?.tags)
             ? req.body.tags.map((t) => String(t || '').trim()).filter(Boolean).slice(0, 10)
             : [];
+        const projectData = req.body?.project || req.body?.projectData || null;
+        const audioUrl = String(req.body?.audioUrl || '').trim();
+        const audioMeta = req.body?.audioMeta && typeof req.body.audioMeta === 'object' ? req.body.audioMeta : null;
 
         if (!title) return res.status(400).json({ message: '标题不能为空' });
 
-        const project = await Project.create({ title, author: userId, cover, tags });
+        const project = await Project.create({
+            title,
+            author: userId,
+            cover,
+            tags,
+            status: 'published',
+            projectData,
+            audioUrl,
+            audioMeta,
+            updatedAt: new Date(),
+        });
 
         // 通知关注者：你关注的人发布了新作品
         try {
@@ -1787,6 +2044,10 @@ app.get('/api/projects/:id', optionalAuth, async (req, res) => {
     try {
         const project = await Project.findById(req.params.id).populate('author', 'username avatar');
         if (!project) return res.status(404).json({ message: '作品不存在' });
+        const isOwner = req.user?.uid && String(project.author?._id || project.author) === String(req.user.uid);
+        if (project.status !== 'published' && !isOwner) {
+            return res.status(404).json({ message: '作品不存在' });
+        }
         if (req.user?.uid) {
             const blockedIds = await getBlockedUserIdsFor(req.user.uid);
             if (blockedIds.some((id) => String(id) === String(project.author?._id || project.author))) {
@@ -1814,6 +2075,7 @@ app.get('/api/search', optionalAuth, async (req, res) => {
         const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
         const projectQuery = {
             $and: [
+                { $or: [{ status: 'published' }, { status: { $exists: false } }] },
                 { $or: [{ title: regex }, { tags: regex }] },
                 ...(blockedIds.length ? [{ author: { $nin: blockedIds } }] : []),
             ],
@@ -1846,6 +2108,10 @@ app.post('/api/projects/:id/like', auth, async (req, res) => {
     try {
         const userId = req.user.uid; // ✅ 从 Token 获取 ID，安全！
         const project = await Project.findById(req.params.id);
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.status || 'published') !== 'published' && String(project.author) !== String(userId)) {
+            return res.status(404).json({ message: '作品不存在' });
+        }
         const index = project.likes.indexOf(userId);
 
         if (index === -1) {
@@ -1865,22 +2131,38 @@ app.post('/api/projects/:id/like', auth, async (req, res) => {
 });
 // 获取评论 (公开)
 app.get('/api/projects/:id/comments', optionalAuth, async (req, res) => {
-    const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
-    const query = {
-        project: req.params.id,
-        ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
-    };
-    const comments = await Comment.find(query)
-        .populate('author', 'username avatar')
-        .populate('replyToUser', 'username avatar')
-        .sort({ createdAt: -1 });
-    res.json(comments);
+    try {
+        const project = await Project.findById(req.params.id).select('author status');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        const isOwner = req.user?.uid && String(project.author) === String(req.user.uid);
+        if (String(project.status || 'published') !== 'published' && !isOwner) {
+            return res.status(404).json({ message: '作品不存在' });
+        }
+
+        const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
+        const query = {
+            project: req.params.id,
+            ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
+        };
+        const comments = await Comment.find(query)
+            .populate('author', 'username avatar')
+            .populate('replyToUser', 'username avatar')
+            .sort({ createdAt: -1 });
+        res.json(comments);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
 });
 // 发表评论 (需要登录)
 app.post('/api/projects/:id/comments', auth, async (req, res) => {
     try {
         const userId = req.user.uid; // ✅ 从 Token 获取
         const { content, parentId, replyToUserId } = req.body;
+        const projectDoc = await Project.findById(req.params.id).select('author status');
+        if (!projectDoc) return res.status(404).json({ message: '作品不存在' });
+        if (String(projectDoc.status || 'published') !== 'published' && String(projectDoc.author) !== String(userId)) {
+            return res.status(404).json({ message: '作品不存在' });
+        }
 
         const newComment = new Comment({
             content, author: userId, project: req.params.id,

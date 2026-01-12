@@ -1,10 +1,11 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import TransportBar from '../components/editor/TransportBar.vue';
 import TrackList from '../components/editor/TrackList.vue';
 import Timeline from '../components/editor/Timeline.vue';
 import MidiPianoRoll from '../components/editor/MidiPianoRoll.vue';
+import UiButton from '../components/UiButton.vue';
 import { createMockProject } from '../components/editor/mockProject.js';
 import { computePeaks } from '../audio/peaks.js';
 import AudioEngine from '../audio/AudioEngine.js';
@@ -12,10 +13,22 @@ import MidiEngine from '../audio/MidiEngine.js';
 import { getSharedAudioContext } from '../audio/sharedAudioContext.js';
 import { notifyPlaybackStop, registerPlaybackSource, requestPlaybackStart } from '../audio/playbackCoordinator.js';
 import { noteToMidi } from '../utils/musicNotes.js';
+import { loadProjectDraft, saveProjectDraft } from '../utils/projectStorage.js';
+import { apiCreateProjectDraft, apiGetProjectSource, apiPublishProject, apiUpdateProjectDraft, isMongoObjectId } from '../api/projects.js';
 
 const route = useRoute();
+const router = useRouter();
 
 const projectId = computed(() => String(route.params.projectId || route.query.projectId || 'proj_demo'));
+const resolvedProjectDocId = ref('');
+
+const hasToken = () => {
+  try {
+    return Boolean(localStorage.getItem('token'));
+  } catch {
+    return false;
+  }
+};
 
 const isPlaying = ref(false);
 const isImportingAudio = ref(false);
@@ -31,9 +44,29 @@ const clipClipboard = ref(null);
 const PLAYBACK_SOURCE_ID = 'studio';
 let unregisterPlayback = null;
 
+const publishOpen = ref(false);
+const publishTitle = ref('');
+const publishCover = ref('');
+const publishTagsText = ref('');
+const publishAudioFile = ref(null);
+const isPublishing = ref(false);
+
 const clipboardToast = ref('');
 const clipboardToastTone = ref('ok');
 let clipboardToastTimer = null;
+
+const saveToast = ref('');
+const saveToastTone = ref('ok');
+let saveToastTimer = null;
+
+const showSaveToast = (message, tone = 'ok') => {
+  saveToastTone.value = tone === 'error' ? 'error' : 'ok';
+  saveToast.value = String(message || '');
+  if (saveToastTimer) window.clearTimeout(saveToastTimer);
+  saveToastTimer = window.setTimeout(() => {
+    saveToast.value = '';
+  }, 1800);
+};
 
 const showClipboardToast = (message, tone = 'ok') => {
   clipboardToastTone.value = tone === 'error' ? 'error' : 'ok';
@@ -259,8 +292,109 @@ const HISTORY_LIMIT = 50;
 const isRestoring = ref(false);
 
 const project = ref(createMockProject(projectId.value));
-watch(projectId, (id) => {
+
+let skipNextLoadId = '';
+
+const toFloat32Array = (value, fallbackLen = 0) => {
+  if (value instanceof Float32Array) return new Float32Array(value);
+  if (Array.isArray(value)) return new Float32Array(value.map((n) => Number(n) || 0));
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value)
+      .filter((k) => String(Number(k)) === String(k))
+      .map((k) => Number(k))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
+    if (!keys.length) return new Float32Array(Math.max(0, Number(fallbackLen) || 0));
+    const out = new Float32Array(keys.length);
+    for (let i = 0; i < keys.length; i += 1) out[i] = Number(value[keys[i]]) || 0;
+    return out;
+  }
+  return new Float32Array(Math.max(0, Number(fallbackLen) || 0));
+};
+
+const hydrateProjectForRuntime = (rawProject) => {
+  const p = rawProject && typeof rawProject === 'object' ? rawProject : {};
+  const assets = Array.isArray(p.assets) ? p.assets : [];
+  const nextAssets = assets.map((a) => {
+    const peaks = a?.peaks;
+    if (!peaks || typeof peaks !== 'object') return a;
+    if (String(peaks.kind || '') !== 'minmax') return a;
+    const points = Math.max(0, Number(peaks.points) || 0);
+    const min = toFloat32Array(peaks.min, points);
+    const max = toFloat32Array(peaks.max, points);
+    return { ...a, peaks: { ...peaks, min, max } };
+  });
+  return { ...p, assets: nextAssets };
+};
+
+const serializeProjectForStorage = (runtimeProject) => {
+  const snap = sanitizeProject(runtimeProject);
+  // Ensure JSON-friendly representation for persistence.
+  snap.assets = (snap.assets || []).map((a) => {
+    const peaks = a?.peaks;
+    if (!peaks || typeof peaks !== 'object') return a;
+    if (String(peaks.kind || '') !== 'minmax') return a;
+    const min = peaks.min instanceof Float32Array ? Array.from(peaks.min) : Array.isArray(peaks.min) ? peaks.min : [];
+    const max = peaks.max instanceof Float32Array ? Array.from(peaks.max) : Array.isArray(peaks.max) ? peaks.max : [];
+    return { ...a, peaks: { ...peaks, min, max } };
+  });
+  return snap;
+};
+
+let autosaveTimer = null;
+let changeSeq = 0;
+let lastSavedSeq = 0;
+
+const scheduleAutoSave = () => {
+  if (isRestoring.value) return;
+  if (autosaveTimer) window.clearTimeout(autosaveTimer);
+  autosaveTimer = window.setTimeout(async () => {
+    if (isRestoring.value) return;
+    if (changeSeq === lastSavedSeq) return;
+    const currentId = String(project.value?.meta?.id || projectId.value || '').trim();
+    if (!currentId) return;
+
+    const payload = serializeProjectForStorage(project.value);
+    try {
+      saveProjectDraft(currentId, payload);
+    } catch {
+      // ignore local persistence failures
+    }
+
+    if (!hasToken()) {
+      lastSavedSeq = changeSeq;
+      return;
+    }
+
+    try {
+      const routeId = String(projectId.value || '').trim();
+      const docId = resolvedProjectDocId.value || (isMongoObjectId(routeId) ? routeId : '');
+      if (docId) {
+        await apiUpdateProjectDraft(docId, { project: payload, title: payload?.meta?.title || '' });
+        resolvedProjectDocId.value = docId;
+      } else {
+        const created = await apiCreateProjectDraft({ project: payload, title: payload?.meta?.title || '' });
+        const newId = String(created?.id || created?._id || '').trim();
+        if (newId && isMongoObjectId(newId)) {
+          resolvedProjectDocId.value = newId;
+          project.value.meta.id = newId;
+          skipNextLoadId = newId;
+          router.replace({ name: 'Studio', params: { projectId: newId } }).catch(() => {});
+        }
+      }
+      lastSavedSeq = changeSeq;
+      showSaveToast('已自动保存');
+    } catch (e) {
+      showSaveToast(e?.message || '自动保存失败', 'error');
+    }
+  }, 900);
+};
+
+const loadProjectById = async (id) => {
+  const pid = String(id || '').trim();
+
   audioEngine.value?.pause?.();
+  midiEngine.value?.pause?.();
   isPlaying.value = false;
   notifyPlaybackStop(PLAYBACK_SOURCE_ID);
   selectedClipIds.value = [];
@@ -268,11 +402,56 @@ watch(projectId, (id) => {
   clipClipboard.value = null;
   undoStack.value = [];
   redoStack.value = [];
-  project.value = createMockProject(id);
-});
+  changeSeq = 0;
+  lastSavedSeq = 0;
+
+  // 1) Prefer server (only works for owner).
+  if (hasToken() && isMongoObjectId(pid)) {
+    try {
+      const data = await apiGetProjectSource(pid);
+      const loaded = hydrateProjectForRuntime(data?.project || {});
+      if (loaded?.meta) loaded.meta.id = pid;
+      project.value = loaded?.meta ? loaded : createMockProject(pid);
+      resolvedProjectDocId.value = pid;
+      audioEngine.value?.applyTrackMix?.(project.value);
+      audioEngine.value?.applyClipMix?.(project.value);
+      midiEngine.value?.applyTrackMix?.(project.value);
+      return;
+    } catch {
+      // fall through to local
+    }
+  }
+
+  // 2) Local draft
+  const local = loadProjectDraft(pid);
+  if (local?.project) {
+    const loaded = hydrateProjectForRuntime(local.project);
+    if (loaded?.meta) loaded.meta.id = pid;
+    project.value = loaded?.meta ? loaded : createMockProject(pid);
+    resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
+    audioEngine.value?.applyTrackMix?.(project.value);
+    audioEngine.value?.applyClipMix?.(project.value);
+    midiEngine.value?.applyTrackMix?.(project.value);
+    return;
+  }
+
+  // 3) Fallback mock
+  project.value = createMockProject(pid);
+  resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
+};
+
+watch(projectId, async (id) => {
+  if (String(id) && String(id) === String(skipNextLoadId)) {
+    skipNextLoadId = '';
+    return;
+  }
+  await loadProjectById(id);
+}, { immediate: true });
 
 const touch = () => {
   project.value.meta.updatedAt = new Date().toISOString();
+  changeSeq += 1;
+  scheduleAutoSave();
 };
 
 const clonePeaks = (peaks) => {
@@ -1104,6 +1283,8 @@ const isAllowedAudioFile = (file) => {
 const createId = (prefix) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
 
+const localAudioFilesByAssetId = new Map();
+
 const importAudio = async (file) => {
   if (!file) return;
   if (!isAllowedAudioFile(file)) {
@@ -1126,6 +1307,7 @@ const importAudio = async (file) => {
     const url = URL.createObjectURL(file);
     const assetId = createId('asset_audio');
     const clipId = createId('clip_audio');
+    localAudioFilesByAssetId.set(assetId, file);
 
     const asset = {
       id: assetId,
@@ -1183,6 +1365,98 @@ const importAudio = async (file) => {
   }
 };
 
+const parseTags = (text) =>
+  String(text || '')
+    .split(/[,，\n\r\t]+/g)
+    .map((t) => String(t || '').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+const estimateDurationSec = () => {
+  const clips = Array.isArray(project.value?.clips) ? project.value.clips : [];
+  const end = Math.max(
+    0,
+    ...clips.map((c) => Math.max(0, Number(c?.start) || 0) + Math.max(0, Number(c?.length) || 0))
+  );
+  return Math.max(0, end);
+};
+
+const openPublish = () => {
+  if (!hasToken()) {
+    alert('请先登录后再发布作品');
+    router.push('/login');
+    return;
+  }
+
+  publishTitle.value = String(project.value?.meta?.title || '').trim() || 'Untitled';
+  publishCover.value = String(publishCover.value || '').trim();
+  publishTagsText.value = String(publishTagsText.value || '').trim();
+
+  let audio = null;
+  for (const a of project.value.assets || []) {
+    if (String(a?.type || '') !== 'audio') continue;
+    const f = localAudioFilesByAssetId.get(String(a.id));
+    if (f) {
+      audio = f;
+      break;
+    }
+  }
+  publishAudioFile.value = audio;
+  publishOpen.value = true;
+};
+
+const onPickPublishAudio = (e) => {
+  const f = e?.target?.files?.[0] || null;
+  publishAudioFile.value = f;
+  if (e?.target) e.target.value = '';
+};
+
+const publishNow = async () => {
+  if (!hasToken()) return;
+  const title = String(publishTitle.value || '').trim();
+  if (!title) {
+    alert('标题不能为空');
+    return;
+  }
+
+  isPublishing.value = true;
+  try {
+    project.value.meta.title = title;
+    touch();
+
+    const payload = serializeProjectForStorage(project.value);
+    const durationSec = estimateDurationSec();
+    const cover = String(publishCover.value || '').trim();
+    const tags = parseTags(publishTagsText.value);
+    const audioFile = publishAudioFile.value || null;
+
+    const routeId = String(projectId.value || '').trim();
+    const docId = isMongoObjectId(routeId) ? routeId : resolvedProjectDocId.value || '';
+
+    const published = await apiPublishProject({
+      projectId: docId,
+      title,
+      cover,
+      tags,
+      durationSec,
+      audioFile,
+      project: payload,
+    });
+
+    showSaveToast('发布成功');
+    publishOpen.value = false;
+
+    const newId = String(published?.id || published?._id || '').trim();
+    if (newId) {
+      router.push({ name: 'ProjectDetail', params: { id: newId } }).catch(() => {});
+    }
+  } catch (e) {
+    alert(e?.message || '发布失败');
+  } finally {
+    isPublishing.value = false;
+  }
+};
+
 onMounted(() => {
   const engine = new AudioEngine({
     context: getSharedAudioContext(),
@@ -1197,6 +1471,9 @@ onMounted(() => {
   });
   audioEngine.value = engine;
   midiEngine.value = new MidiEngine({ context: engine.context });
+  audioEngine.value?.applyTrackMix?.(project.value);
+  audioEngine.value?.applyClipMix?.(project.value);
+  midiEngine.value?.applyTrackMix?.(project.value);
   try {
     unregisterPlayback = registerPlaybackSource(PLAYBACK_SOURCE_ID, {
       stop: () => {
@@ -1283,6 +1560,8 @@ onBeforeUnmount(() => {
   const handler = audioEngine.value?.__onKeyDown;
   if (handler) window.removeEventListener('keydown', handler);
   if (clipboardToastTimer) window.clearTimeout(clipboardToastTimer);
+  if (saveToastTimer) window.clearTimeout(saveToastTimer);
+  if (autosaveTimer) window.clearTimeout(autosaveTimer);
   unregisterPlayback?.();
   unregisterPlayback = null;
   midiEngine.value?.destroy?.();
@@ -1295,6 +1574,17 @@ onBeforeUnmount(() => {
 <template>
   <div class="h-screen flex flex-col overflow-hidden">
     <div
+      v-if="saveToast"
+      class="fixed top-24 right-6 z-[120] glass-card px-4 py-2 rounded-xl border border-white/70 text-sm font-semibold text-slate-800 shadow-lg"
+    >
+      <div class="flex items-center gap-2">
+        <i v-if="saveToastTone === 'ok'" class="ph-bold ph-check-circle text-emerald-600"></i>
+        <i v-else class="ph-bold ph-warning-circle text-rose-600"></i>
+        {{ saveToast }}
+      </div>
+    </div>
+
+    <div
       v-if="clipboardToast"
       class="fixed top-24 right-6 z-[120] glass-card px-4 py-2 rounded-xl border border-white/70 text-sm font-semibold text-slate-800 shadow-lg"
     >
@@ -1302,6 +1592,51 @@ onBeforeUnmount(() => {
         <i v-if="clipboardToastTone === 'ok'" class="ph-bold ph-check-circle text-emerald-600"></i>
         <i v-else class="ph-bold ph-warning-circle text-rose-600"></i>
         {{ clipboardToast }}
+      </div>
+    </div>
+
+    <div v-if="publishOpen" class="fixed inset-0 z-[130] flex items-center justify-center px-4">
+      <div class="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" @click="publishOpen = false"></div>
+      <div class="glass-card w-full max-w-lg rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden">
+        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between">
+          <div class="text-lg font-extrabold text-slate-900">发布作品</div>
+          <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="publishOpen = false">
+            <i class="ph-bold ph-x"></i>
+          </UiButton>
+        </div>
+
+        <div class="p-5 space-y-4">
+          <div>
+            <div class="text-xs text-slate-500 font-semibold mb-1">标题</div>
+            <input v-model="publishTitle" class="w-full input-glass rounded-lg px-3 py-2 text-sm" placeholder="作品标题" />
+          </div>
+
+          <div>
+            <div class="text-xs text-slate-500 font-semibold mb-1">封面（可选：颜色渐变或图片 URL）</div>
+            <input v-model="publishCover" class="w-full input-glass rounded-lg px-3 py-2 text-sm" placeholder="例如 linear-gradient(...) 或 https://..." />
+          </div>
+
+          <div>
+            <div class="text-xs text-slate-500 font-semibold mb-1">标签（可选，逗号分隔，最多 10 个）</div>
+            <input v-model="publishTagsText" class="w-full input-glass rounded-lg px-3 py-2 text-sm" placeholder="Pop, Electronic, Chill" />
+          </div>
+
+          <div>
+            <div class="text-xs text-slate-500 font-semibold mb-1">试听音频（建议上传 wav/mp3）</div>
+            <input type="file" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3" class="w-full text-sm" @change="onPickPublishAudio" />
+            <div class="mt-1 text-[11px] text-slate-500 font-semibold">
+              {{ publishAudioFile ? `已选择：${publishAudioFile.name}` : '未选择音频：仍可发布，但社区将缺少试听音频' }}
+            </div>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2">
+          <UiButton variant="ghost" class="px-4 py-2 rounded-lg text-sm font-semibold" :disabled="isPublishing" @click="publishOpen = false">取消</UiButton>
+          <UiButton variant="primary" class="px-5 py-2 rounded-lg text-sm font-semibold text-white" :disabled="isPublishing" @click="publishNow">
+            <i v-if="isPublishing" class="ph-bold ph-spinner animate-spin"></i>
+            {{ isPublishing ? '发布中...' : '发布' }}
+          </UiButton>
+        </div>
       </div>
     </div>
 
@@ -1327,6 +1662,7 @@ onBeforeUnmount(() => {
       @add-marker="addMarker"
       @add-region="addRegion"
       @import-audio="importAudio"
+      @publish="openPublish"
     />
 
     <div class="flex-1 flex overflow-hidden">

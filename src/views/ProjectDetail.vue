@@ -23,6 +23,12 @@ const projectId = computed(() => String(route.params.id || ''));
 const project = ref(null);
 const isProjectLoading = ref(true);
 const projectError = ref('');
+const isOwner = computed(() => {
+  const me = user.value?.uid;
+  const authorId = project.value?.author?.uid;
+  if (!me || !authorId) return false;
+  return String(me) === String(authorId);
+});
 
 const comments = ref([]);
 const isCommentsLoading = ref(true);
@@ -65,6 +71,12 @@ function coverFallback() {
 
 function focusCommentsInput() {
   commentInputRef.value?.focus?.();
+}
+
+function goToEditor() {
+  if (!projectId.value) return;
+  if (!user.value) return router.push('/login');
+  router.push({ name: 'Studio', params: { projectId: projectId.value } });
 }
 
 async function scrollToComment(commentId) {
@@ -407,6 +419,21 @@ watch(
                   <i class="ph-bold ph-chat-circle"></i>
                   评论
                 </UiButton>
+              </div>
+
+              <UiButton
+                v-if="isOwner"
+                @click="goToEditor"
+                variant="secondary"
+                class="mt-3 w-full px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+              >
+                <i class="ph-bold ph-pencil-simple"></i>
+                继续编辑
+              </UiButton>
+
+              <div v-if="project.audioUrl" class="mt-5">
+                <div class="text-xs text-slate-500 font-semibold mb-2">试听</div>
+                <audio :src="project.audioUrl" controls class="w-full"></audio>
               </div>
             </div>
           </div>

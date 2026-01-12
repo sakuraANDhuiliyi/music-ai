@@ -28,6 +28,7 @@ const emit = defineEmits([
   'addMarker',
   'addRegion',
   'importAudio',
+  'publish',
 ]);
 
 const router = useRouter();
@@ -216,6 +217,15 @@ const onPickFile = (e) => {
         <i v-if="isImporting" class="ph-bold ph-spinner animate-spin"></i>
         <i v-else class="ph-bold ph-upload-simple"></i>
         导入音频
+      </UiButton>
+
+      <UiButton
+        variant="primary"
+        class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white"
+        @click="emit('publish')"
+      >
+        <i class="ph-bold ph-upload"></i>
+        发布
       </UiButton>
 
       <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.35)]">
