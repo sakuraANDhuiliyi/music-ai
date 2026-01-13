@@ -1532,6 +1532,51 @@ app.post('/api/upload/audio', auth, audioUpload.single('file'), (req, res) => {
     });
 });
 
+// WAV -> MP3 转码（需要系统安装 ffmpeg）
+app.post('/api/convert/mp3', auth, audioUpload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: '无文件' });
+        const inputPath = req.file.path;
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const outputFilename = `mp3-${uniqueSuffix}.mp3`;
+        const outputPath = path.join(uploadDir, outputFilename);
+
+        const args = [
+            '-y',
+            '-i',
+            inputPath,
+            '-codec:a',
+            'libmp3lame',
+            '-q:a',
+            '4',
+            outputPath,
+        ];
+
+        const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        let stderr = '';
+        proc.stderr.on('data', (d) => { stderr += String(d || ''); });
+
+        proc.on('error', (err) => {
+            if (String(err?.code || '') === 'ENOENT') {
+                return res.status(501).json({ message: '服务端未安装 ffmpeg，无法导出 MP3（请安装 ffmpeg 并加入 PATH）' });
+            }
+            return res.status(500).json({ message: '转码失败' });
+        });
+
+        proc.on('close', (code) => {
+            if (code !== 0) {
+                const detail = String(stderr || '').slice(0, 800);
+                return res.status(500).json({ message: 'ffmpeg 转码失败', detail });
+            }
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            return res.json({ url: `${baseUrl}/uploads/${outputFilename}` });
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
 // 音频 -> 键位文字谱（低配友好：HPSS + piptrack）
 app.post('/api/audio-to-sheet', auth, audioUpload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ message: '无文件' });

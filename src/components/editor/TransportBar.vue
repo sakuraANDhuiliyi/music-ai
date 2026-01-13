@@ -29,6 +29,7 @@ const emit = defineEmits([
   'addRegion',
   'importAudio',
   'publish',
+  'export',
 ]);
 
 const router = useRouter();
@@ -226,6 +227,15 @@ const onPickFile = (e) => {
       >
         <i class="ph-bold ph-upload"></i>
         发布
+      </UiButton>
+
+      <UiButton
+        variant="secondary"
+        class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+        @click="emit('export')"
+      >
+        <i class="ph-bold ph-download-simple"></i>
+        导出
       </UiButton>
 
       <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.35)]">

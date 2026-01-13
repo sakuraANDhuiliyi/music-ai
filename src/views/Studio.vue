@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { authFetch } from '../composables/useUser.js';
 import TransportBar from '../components/editor/TransportBar.vue';
 import TrackList from '../components/editor/TrackList.vue';
 import Timeline from '../components/editor/Timeline.vue';
@@ -60,6 +61,10 @@ const publishAudioFile = ref(null);
 const isPublishing = ref(false);
 const isRenderingPreview = ref(false);
 
+const exportOpen = ref(false);
+const isExportingWav = ref(false);
+const isExportingMp3 = ref(false);
+
 const clipboardToast = ref('');
 const clipboardToastTone = ref('ok');
 let clipboardToastTimer = null;
@@ -75,6 +80,89 @@ const showSaveToast = (message, tone = 'ok') => {
   saveToastTimer = window.setTimeout(() => {
     saveToast.value = '';
   }, 1800);
+};
+
+const downloadBlob = (blob, filename) => {
+  const name = String(filename || '').trim() || 'download';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name.replace(/[\\/:*?"<>|]/g, '_');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+const downloadUrl = (url, filename) => {
+  const href = String(url || '').trim();
+  if (!href) return;
+  const a = document.createElement('a');
+  a.href = href;
+  if (filename) a.download = String(filename).replace(/[\\/:*?"<>|]/g, '_');
+  a.target = '_blank';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+
+const exportProjectJson = () => {
+  try {
+    const payload = serializeProjectForStorage(project.value);
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+    const id = String(project.value?.meta?.id || projectId.value || 'project').trim() || 'project';
+    downloadBlob(blob, `${id}.json`);
+  } catch (e) {
+    alert(e?.message || '导出 JSON 失败');
+  }
+};
+
+const exportMixdownWav = async () => {
+  if (isExportingWav.value) return;
+  isExportingWav.value = true;
+  try {
+    const id = String(project.value?.meta?.id || projectId.value || 'project').trim() || 'project';
+    const file = await renderProjectToWavFile(project.value, {
+      filename: `${id}.wav`,
+      sampleRate: 44100,
+      filesByAssetId: localAudioFilesByAssetId,
+      maxDurationSec: 600,
+    });
+    downloadBlob(file, file.name);
+  } catch (e) {
+    alert(e?.message || '导出 WAV 失败');
+  } finally {
+    isExportingWav.value = false;
+  }
+};
+
+const exportMixdownMp3 = async () => {
+  if (isExportingMp3.value) return;
+  if (!hasToken()) {
+    alert('导出 MP3 需要后端转码：请先登录并确保服务端可用 ffmpeg');
+    return;
+  }
+  isExportingMp3.value = true;
+  try {
+    const id = String(project.value?.meta?.id || projectId.value || 'project').trim() || 'project';
+    const wav = await renderProjectToWavFile(project.value, {
+      filename: `${id}.wav`,
+      sampleRate: 44100,
+      filesByAssetId: localAudioFilesByAssetId,
+      maxDurationSec: 600,
+    });
+    const res = await authFetch('/api/convert/mp3', { method: 'POST', body: (() => { const f = new FormData(); f.append('file', wav); return f; })() });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.message || 'MP3 转码失败');
+    const url = String(data?.url || '').trim();
+    downloadUrl(url, `${id}.mp3`);
+  } catch (e) {
+    alert(e?.message || '导出 MP3 失败（可能未安装 ffmpeg）');
+  } finally {
+    isExportingMp3.value = false;
+  }
 };
 
 const showClipboardToast = (message, tone = 'ok') => {
@@ -1415,6 +1503,10 @@ const openPublish = () => {
   publishOpen.value = true;
 };
 
+const openExport = () => {
+  exportOpen.value = true;
+};
+
 const onPickPublishAudio = (e) => {
   const f = e?.target?.files?.[0] || null;
   publishAudioFile.value = f;
@@ -1717,6 +1809,61 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div v-if="exportOpen" class="fixed inset-0 z-[130] flex items-center justify-center px-4">
+      <div class="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" @click="exportOpen = false"></div>
+      <div class="glass-card w-full max-w-lg rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden">
+        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between">
+          <div class="text-lg font-extrabold text-slate-900">导出</div>
+          <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="exportOpen = false">
+            <i class="ph-bold ph-x"></i>
+          </UiButton>
+        </div>
+
+        <div class="p-5 space-y-3">
+          <div class="text-sm text-slate-600">
+            支持导出工程 JSON、离线混音导出 WAV；MP3 需要服务端 ffmpeg 转码。
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <UiButton
+              variant="secondary"
+              class="px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+              @click="exportProjectJson"
+            >
+              <i class="ph-bold ph-file-code"></i>
+              JSON
+            </UiButton>
+
+            <UiButton
+              variant="secondary"
+              class="px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+              :disabled="isExportingWav"
+              @click="exportMixdownWav"
+            >
+              <i v-if="isExportingWav" class="ph-bold ph-spinner animate-spin"></i>
+              <i v-else class="ph-bold ph-waveform"></i>
+              WAV
+            </UiButton>
+
+            <UiButton
+              variant="secondary"
+              class="px-4 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2"
+              :disabled="isExportingMp3"
+              @click="exportMixdownMp3"
+            >
+              <i v-if="isExportingMp3" class="ph-bold ph-spinner animate-spin"></i>
+              <i v-else class="ph-bold ph-music-notes"></i>
+              MP3
+            </UiButton>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2">
+          <UiButton variant="ghost" class="px-4 py-2 rounded-lg text-sm font-semibold" @click="exportOpen = false">关闭</UiButton>
+        </div>
+      </div>
+    </div>
+
     <TransportBar
       :project-id="projectId"
       :title="project.meta.title"
@@ -1740,6 +1887,7 @@ onBeforeUnmount(() => {
       @add-region="addRegion"
       @import-audio="importAudio"
       @publish="openPublish"
+      @export="openExport"
     />
 
     <div class="flex-1 flex overflow-hidden">
