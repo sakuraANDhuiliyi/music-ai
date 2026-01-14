@@ -15,18 +15,29 @@ const searchQuery = ref('');
 const isMobileMenuOpen = ref(false);
 const isMoreOpen = ref(false);
 const isFeedOpen = ref(false);
+const isNotesOpen = ref(false);
 const isUserMenuOpen = ref(false);
 const isLoginCardOpen = ref(false);
 
 const unreadTotal = ref(0);
 const unreadFollowedProject = ref(0);
-const unreadNonFeed = computed(() => Math.max(0, (unreadTotal.value || 0) - (unreadFollowedProject.value || 0)));
+const unreadFollowedPost = ref(0);
+const unreadChat = ref(0);
+const unreadReplies = ref(0);
+const unreadMentions = ref(0);
+const unreadLikes = ref(0);
+const unreadSystem = ref(0);
+const unreadFollowedFeed = computed(
+  () => Math.max(0, Number(unreadFollowedProject.value || 0) + Number(unreadFollowedPost.value || 0))
+);
+const unreadNonFeed = computed(() => Math.max(0, (unreadTotal.value || 0) - unreadFollowedFeed.value));
 
 const feedItems = ref([]);
 const isFeedLoading = ref(false);
 const meStats = ref({ followerCount: 0, followingCount: 0 });
 
 let feedCloseTimer = null;
+let notesCloseTimer = null;
 let userMenuCloseTimer = null;
 let pollTimer = null;
 let backoffMs = 5000;
@@ -36,6 +47,7 @@ const closeAllMenus = () => {
   isMobileMenuOpen.value = false;
   isMoreOpen.value = false;
   isFeedOpen.value = false;
+  isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isLoginCardOpen.value = false;
 };
@@ -68,6 +80,18 @@ const ensureLogin = () => {
   return false;
 };
 
+const ensureLoginForHover = () => {
+  if (!isAuthReady.value) return false;
+  if (user.value) return true;
+  isFeedOpen.value = false;
+  isNotesOpen.value = false;
+  isUserMenuOpen.value = false;
+  isMoreOpen.value = false;
+  isMobileMenuOpen.value = false;
+  isLoginCardOpen.value = true;
+  return false;
+};
+
 const timeAgo = (dateStr) => {
   const t = new Date(dateStr || 0).getTime();
   if (!t) return '';
@@ -96,6 +120,12 @@ const checkUnread = async () => {
   if (!user.value) {
     unreadTotal.value = 0;
     unreadFollowedProject.value = 0;
+    unreadFollowedPost.value = 0;
+    unreadChat.value = 0;
+    unreadReplies.value = 0;
+    unreadMentions.value = 0;
+    unreadLikes.value = 0;
+    unreadSystem.value = 0;
     return;
   }
   try {
@@ -104,6 +134,12 @@ const checkUnread = async () => {
       const data = await res.json();
       unreadTotal.value = Number(data?.totalCount ?? data?.count ?? 0) || 0;
       unreadFollowedProject.value = Number(data?.breakdown?.followedProject ?? 0) || 0;
+      unreadFollowedPost.value = Number(data?.breakdown?.followedPost ?? 0) || 0;
+      unreadChat.value = Number(data?.breakdown?.chat ?? data?.chatCount ?? 0) || 0;
+      unreadReplies.value = Number(data?.breakdown?.replies ?? 0) || 0;
+      unreadMentions.value = Number(data?.breakdown?.mentions ?? 0) || 0;
+      unreadLikes.value = Number(data?.breakdown?.likes ?? 0) || 0;
+      unreadSystem.value = Number(data?.breakdown?.system ?? 0) || 0;
     }
     backoffMs = 5000;
     consecutiveFailures = 0;
@@ -145,7 +181,7 @@ const fetchFeed = async () => {
   }
   isFeedLoading.value = true;
   try {
-    const res = await authFetch('/api/notifications?types=followed_project&limit=20');
+    const res = await authFetch('/api/notifications?types=followed_project,followed_post&limit=20');
     const data = res.ok ? await res.json() : null;
     feedItems.value = Array.isArray(data) ? data : [];
   } catch {
@@ -160,11 +196,24 @@ const markFeedRead = async () => {
   try {
     await authFetch('/api/notifications/read', {
       method: 'PUT',
-      body: JSON.stringify({ types: ['followed_project'] }),
+      body: JSON.stringify({ types: ['followed_project', 'followed_post'] }),
     });
   } catch {
     // ignore
   }
+};
+
+const openFeedItem = (note) => {
+  if (!note) return;
+  closeAllMenus();
+
+  if (note.type === 'followed_post') {
+    const pid = note?.post?.id || note?.post?._id || note?.post;
+    if (pid) return router.push({ name: 'PostDetail', params: { id: pid } });
+  }
+
+  const projectId = note?.project?.id || note?.project?._id || note?.project;
+  if (projectId) router.push({ name: 'ProjectDetail', params: { id: projectId } });
 };
 
 const clearFeedCloseTimer = () => {
@@ -172,15 +221,41 @@ const clearFeedCloseTimer = () => {
   window.clearTimeout(feedCloseTimer);
   feedCloseTimer = null;
 };
+const clearNotesCloseTimer = () => {
+  if (!notesCloseTimer) return;
+  window.clearTimeout(notesCloseTimer);
+  notesCloseTimer = null;
+};
 const clearUserMenuCloseTimer = () => {
   if (!userMenuCloseTimer) return;
   window.clearTimeout(userMenuCloseTimer);
   userMenuCloseTimer = null;
 };
 
+const openNotesPanel = async () => {
+  if (!ensureLoginForHover()) return;
+  clearNotesCloseTimer();
+  isFeedOpen.value = false;
+  isUserMenuOpen.value = false;
+  isLoginCardOpen.value = false;
+  isMoreOpen.value = false;
+  isMobileMenuOpen.value = false;
+  if (isNotesOpen.value) return;
+  isNotesOpen.value = true;
+  await checkUnread();
+};
+const scheduleCloseNotesPanel = () => {
+  clearNotesCloseTimer();
+  notesCloseTimer = window.setTimeout(() => {
+    isNotesOpen.value = false;
+    notesCloseTimer = null;
+  }, 180);
+};
+
 const openFeedPanel = async () => {
-  if (!ensureLogin()) return;
+  if (!ensureLoginForHover()) return;
   clearFeedCloseTimer();
+  isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isLoginCardOpen.value = false;
   isMoreOpen.value = false;
@@ -203,6 +278,7 @@ const openUserMenuPanel = async () => {
   if (!ensureLogin()) return;
   clearUserMenuCloseTimer();
   isFeedOpen.value = false;
+  isNotesOpen.value = false;
   isLoginCardOpen.value = false;
   isMoreOpen.value = false;
   isMobileMenuOpen.value = false;
@@ -221,6 +297,7 @@ const scheduleCloseUserMenuPanel = () => {
 const openLoginCard = () => {
   if (user.value) return;
   isFeedOpen.value = false;
+  isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isMoreOpen.value = false;
   isMobileMenuOpen.value = false;
@@ -246,6 +323,11 @@ const goToStudio = () => router.push('/studio');
 const goToNotifications = () => {
   if (!ensureLogin()) return;
   router.push({ name: 'Notifications', query: { tab: 'chat' } });
+};
+const goToNotificationsTab = (tab) => {
+  if (!ensureLogin()) return;
+  closeAllMenus();
+  router.push({ name: 'Notifications', query: { tab } });
 };
 const goToFeed = () => {
   if (!ensureLogin()) return;
@@ -279,6 +361,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearFeedCloseTimer();
+  clearNotesCloseTimer();
   clearUserMenuCloseTimer();
   if (pollTimer) clearTimeout(pollTimer);
   const root = navRootRef.value;
@@ -399,24 +482,85 @@ watch(
 
         <!-- Desktop icon group (bilibili-like) -->
         <div class="hidden lg:flex items-center gap-1">
-          <button class="nav-icon relative" type="button" @click="goToNotifications" aria-label="消息">
-            <i class="ph-bold ph-envelope-simple text-xl"></i>
-            <span class="text-[11px] font-bold text-slate-600 leading-none">消息</span>
-            <span v-if="unreadNonFeed" class="badge">{{ unreadNonFeed > 99 ? '99+' : unreadNonFeed }}</span>
-          </button>
+          <div class="relative" @pointerenter="openNotesPanel" @pointerleave="scheduleCloseNotesPanel">
+            <button class="nav-icon relative" type="button" @click="goToNotifications" aria-label="消息">
+              <i class="ph-bold ph-envelope-simple text-xl"></i>
+              <span class="text-[11px] font-bold text-slate-600 leading-none">消息</span>
+              <span v-if="unreadNonFeed" class="badge">{{ unreadNonFeed > 99 ? '99+' : unreadNonFeed }}</span>
+            </button>
+
+            <div
+              v-if="isNotesOpen"
+              @pointerenter="clearNotesCloseTimer"
+              @pointerleave="scheduleCloseNotesPanel"
+              class="absolute right-0 mt-2 w-[min(320px,calc(100vw-2rem))] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
+            >
+              <div class="px-4 py-3 border-b border-slate-200/70 bg-white/35 flex items-center justify-between">
+                <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                  <i class="ph-bold ph-envelope-simple text-sky-700"></i>
+                  消息
+                </div>
+                <button class="text-xs font-semibold text-slate-600 hover:text-sky-700 transition" type="button" @click="goToNotifications">
+                  查看全部
+                </button>
+              </div>
+
+              <div class="p-2 space-y-1">
+                <button type="button" class="menu-row" @click="goToNotificationsTab('chat')">
+                  <span class="inline-flex items-center gap-2">
+                    <i class="ph-bold ph-chats-circle text-slate-500"></i>
+                    我的消息
+                  </span>
+                  <span v-if="unreadChat" class="pill ml-auto">{{ unreadChat > 99 ? '99+' : unreadChat }}</span>
+                </button>
+
+                <button type="button" class="menu-row" @click="goToNotificationsTab('replies')">
+                  <span class="inline-flex items-center gap-2">
+                    <i class="ph-bold ph-chat-teardrop-text text-slate-500"></i>
+                    回复我的
+                  </span>
+                  <span v-if="unreadReplies" class="pill ml-auto">{{ unreadReplies > 99 ? '99+' : unreadReplies }}</span>
+                </button>
+
+                <button type="button" class="menu-row" @click="goToNotificationsTab('mentions')">
+                  <span class="inline-flex items-center gap-2">
+                    <i class="ph-bold ph-at text-slate-500"></i>
+                    @我的
+                  </span>
+                  <span v-if="unreadMentions" class="pill ml-auto">{{ unreadMentions > 99 ? '99+' : unreadMentions }}</span>
+                </button>
+
+                <button type="button" class="menu-row" @click="goToNotificationsTab('likes')">
+                  <span class="inline-flex items-center gap-2">
+                    <i class="ph-bold ph-heart text-slate-500"></i>
+                    收到的赞
+                  </span>
+                  <span v-if="unreadLikes" class="pill ml-auto">{{ unreadLikes > 99 ? '99+' : unreadLikes }}</span>
+                </button>
+
+                <button type="button" class="menu-row" @click="goToNotificationsTab('system')">
+                  <span class="inline-flex items-center gap-2">
+                    <i class="ph-bold ph-bell text-slate-500"></i>
+                    系统通知
+                  </span>
+                  <span v-if="unreadSystem" class="pill ml-auto">{{ unreadSystem > 99 ? '99+' : unreadSystem }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div class="relative" @pointerenter="openFeedPanel" @pointerleave="scheduleCloseFeedPanel">
             <button class="nav-icon relative" type="button" @click="goToFeed" aria-label="动态">
               <i class="ph-bold ph-broadcast text-xl"></i>
               <span class="text-[11px] font-bold text-slate-600 leading-none">动态</span>
-              <span v-if="unreadFollowedProject" class="badge">{{ unreadFollowedProject > 99 ? '99+' : unreadFollowedProject }}</span>
+              <span v-if="unreadFollowedFeed" class="badge">{{ unreadFollowedFeed > 99 ? '99+' : unreadFollowedFeed }}</span>
             </button>
 
             <div
               v-if="isFeedOpen"
               @pointerenter="clearFeedCloseTimer"
               @pointerleave="scheduleCloseFeedPanel"
-              class="absolute right-0 mt-2 w-[420px] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
+              class="absolute right-0 mt-2 w-[min(420px,calc(100vw-2rem))] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
             >
               <div class="px-4 py-3 border-b border-slate-200/70 bg-white/35 flex items-center justify-between">
                 <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
@@ -446,7 +590,7 @@ watch(
                   :key="note.id"
                   type="button"
                   class="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-white/35 transition"
-                  @click="router.push({ name: 'ProjectDetail', params: { id: note.project?.id || note.project?._id || note.project } })"
+                  @click="openFeedItem(note)"
                 >
                   <img v-if="note.sender?.avatar" :src="note.sender.avatar" class="w-9 h-9 rounded-full object-cover border border-white/70 shrink-0" />
                   <div
@@ -462,12 +606,27 @@ watch(
                       <span v-if="!note.isRead" class="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
                       <div class="text-[11px] text-slate-500 font-semibold ml-auto shrink-0">{{ timeAgo(note.createdAt) }}</div>
                     </div>
-                    <div class="mt-1 text-sm text-slate-700 truncate">
+                    <div v-if="note.type === 'followed_post'" class="mt-1 text-sm text-slate-700 truncate">
+                      发布了动态：<span class="font-semibold text-slate-900">{{ String(note.post?.content || '').trim() || '发布了一条动态' }}</span>
+                    </div>
+                    <div v-else class="mt-1 text-sm text-slate-700 truncate">
+                      发布了新作品：<span class="font-semibold text-slate-900">{{ note.project?.title || '未命名作品' }}</span>
+                    </div>
+                    <div v-if="false" class="mt-1 text-sm text-slate-700 truncate">
                       发布了新作品：<span class="font-semibold text-slate-900">{{ note.project?.title || '未命名作品' }}</span>
                     </div>
                   </div>
 
-                  <div v-if="note.project" class="w-14 h-10 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm" :style="coverStyle(note.project.cover)"></div>
+                  <div
+                    v-if="note.type === 'followed_project' && note.project"
+                    class="w-14 h-10 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
+                    :style="coverStyle(note.project.cover)"
+                  ></div>
+                  <div
+                    v-else-if="note.type === 'followed_post' && note.post?.project"
+                    class="w-14 h-10 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
+                    :style="coverStyle(note.post.project.cover)"
+                  ></div>
                 </button>
               </div>
 
@@ -510,7 +669,7 @@ watch(
           <!-- User dropdown -->
           <div
             v-if="user && isUserMenuOpen"
-            class="absolute right-0 mt-2 w-[320px] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
+            class="absolute right-0 mt-2 w-[min(320px,calc(100vw-2rem))] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
             @pointerenter="clearUserMenuCloseTimer"
             @pointerleave="scheduleCloseUserMenuPanel"
           >
@@ -538,7 +697,7 @@ watch(
                   <div class="stat-label">粉丝</div>
                 </div>
                 <button type="button" class="stat stat-btn" @click="goToFeed">
-                  <div class="stat-num">{{ unreadFollowedProject }}</div>
+                  <div class="stat-num">{{ unreadFollowedFeed }}</div>
                   <div class="stat-label">动态</div>
                 </button>
               </div>
@@ -557,7 +716,7 @@ watch(
               </button>
               <button type="button" class="menu-row" @click="goToFeed">
                 <i class="ph-bold ph-broadcast"></i><span class="flex-1">动态</span>
-                <span v-if="unreadFollowedProject" class="pill">{{ unreadFollowedProject > 99 ? '99+' : unreadFollowedProject }}</span>
+                <span v-if="unreadFollowedFeed" class="pill">{{ unreadFollowedFeed > 99 ? '99+' : unreadFollowedFeed }}</span>
               </button>
               <button type="button" class="menu-row text-rose-700" @click="logout">
                 <i class="ph-bold ph-sign-out"></i><span class="flex-1">退出登录</span>
@@ -566,7 +725,10 @@ watch(
           </div>
 
           <!-- Login dropdown -->
-          <div v-if="!user && isLoginCardOpen" class="absolute right-0 mt-2 w-[360px] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl">
+          <div
+            v-if="!user && isLoginCardOpen"
+            class="absolute right-0 mt-2 w-[min(360px,calc(100vw-2rem))] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
+          >
             <div class="p-5">
               <div class="text-base font-extrabold text-slate-900">登录后你可以：</div>
               <div class="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-700 font-semibold">
@@ -627,7 +789,7 @@ watch(
           <button type="button" class="mobile-icon" @click="goToFeed">
             <i class="ph-bold ph-broadcast text-xl"></i>
             <span>动态</span>
-            <span v-if="unreadFollowedProject" class="mobile-badge">{{ unreadFollowedProject > 99 ? '99+' : unreadFollowedProject }}</span>
+            <span v-if="unreadFollowedFeed" class="mobile-badge">{{ unreadFollowedFeed > 99 ? '99+' : unreadFollowedFeed }}</span>
           </button>
           <button type="button" class="mobile-icon" @click="goToStudio">
             <i class="ph-bold ph-upload-simple text-xl"></i>

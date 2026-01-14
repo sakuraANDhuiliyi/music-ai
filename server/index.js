@@ -10,6 +10,7 @@ import { spawn } from 'child_process';
 import jwt from 'jsonwebtoken'; // [新增]
 import User from './models/User.js';
 import Project from './models/Project.js';
+import Post from './models/Post.js';
 import Comment from './models/Comment.js';
 import Notification from './models/Notification.js';
 import Conversation from './models/Conversation.js';
@@ -436,6 +437,12 @@ const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 app.use('/uploads', express.static(uploadDir));
 
+const postImageDir = path.join(uploadDir, 'post-images');
+if (!fs.existsSync(postImageDir)) fs.mkdirSync(postImageDir);
+
+const emojiDir = path.join(uploadDir, 'emojis');
+if (!fs.existsSync(emojiDir)) fs.mkdirSync(emojiDir);
+
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
@@ -445,6 +452,42 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
     storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const mime = String(file?.mimetype || '');
+        if (mime.startsWith('image/')) return cb(null, true);
+        return cb(new Error('仅支持图片文件'));
+    },
+});
+
+const postImageStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, postImageDir),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'postimg-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const postImageUpload = multer({
+    storage: postImageStorage,
+    limits: { fileSize: 8 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const mime = String(file?.mimetype || '');
+        if (mime.startsWith('image/')) return cb(null, true);
+        return cb(new Error('仅支持图片文件'));
+    },
+});
+
+const emojiStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, emojiDir),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'emoji-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const emojiUpload = multer({
+    storage: emojiStorage,
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const mime = String(file?.mimetype || '');
@@ -1544,6 +1587,80 @@ app.post('/api/upload', auth, upload.single('file'), (req, res) => {
     res.json({ url: `${baseUrl}/uploads/${req.file.filename}` });
 });
 
+app.post('/api/upload/images', auth, postImageUpload.array('files', 6), (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!files.length) return res.status(400).json({ message: '无文件' });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const payload = files.map((f) => ({
+        url: `${baseUrl}/uploads/post-images/${f.filename}`,
+        size: Number(f.size || 0),
+        mime: String(f.mimetype || ''),
+        filename: String(f.filename || ''),
+        originalName: String(f.originalname || ''),
+    }));
+    res.json({ files: payload, urls: payload.map((x) => x.url) });
+});
+
+// --- Custom Emojis ---
+app.get('/api/emojis', auth, async (req, res) => {
+    try {
+        const me = String(req.user.uid || '');
+        const user = await User.findById(me).select('customEmojis');
+        const list = Array.isArray(user?.customEmojis) ? user.customEmojis : [];
+        res.json(list.map((e) => ({
+            id: String(e._id || ''),
+            url: String(e.url || ''),
+            name: String(e.name || ''),
+            createdAt: e.createdAt,
+        })));
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+app.post('/api/emojis/upload', auth, emojiUpload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: '无文件' });
+        const me = String(req.user.uid || '');
+        const user = await User.findById(me).select('customEmojis');
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const url = `${baseUrl}/uploads/emojis/${req.file.filename}`;
+        const rawName = String(req.body?.name || req.file.originalname || '').trim();
+        const name = rawName.slice(0, 48);
+
+        if ((user.customEmojis || []).length >= 80) {
+            return res.status(400).json({ message: '自定义表情已达上限（80）' });
+        }
+
+        user.customEmojis.push({ url, name });
+        await user.save();
+        const last = user.customEmojis[user.customEmojis.length - 1];
+        return res.status(201).json({
+            id: String(last?._id || ''),
+            url: String(last?.url || url),
+            name: String(last?.name || name),
+            createdAt: last?.createdAt || new Date(),
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+app.delete('/api/emojis/:id', auth, async (req, res) => {
+    try {
+        const me = String(req.user.uid || '');
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid emoji id' });
+
+        await User.updateOne({ _id: me }, { $pull: { customEmojis: { _id: id } } });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
 app.post('/api/upload/audio', auth, audioUpload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: '无文件' });
     const baseUrl = `${req.protocol}://${req.get('host')}`;
@@ -1736,6 +1853,11 @@ app.get('/api/notifications', auth, async (req, res) => {
         .populate('sender', 'username avatar')
         .populate('project', 'title cover')
         .populate({
+            path: 'post',
+            select: 'content images project createdAt',
+            populate: { path: 'project', select: 'title cover' },
+        })
+        .populate({
             path: 'comment',
             select: 'content likes parentId replyToUser createdAt author',
             populate: [
@@ -1754,13 +1876,14 @@ app.get('/api/notifications/unread-count', auth, async (req, res) => {
         isRead: false,
         ...(blockedIds.length ? { sender: { $nin: blockedIds } } : {}),
     };
-    const [count, repliesCount, mentionsCount, likesCount, systemCount, followedProjectCount] = await Promise.all([
+    const [count, repliesCount, mentionsCount, likesCount, systemCount, followedProjectCount, followedPostCount] = await Promise.all([
         Notification.countDocuments(baseQuery),
-        Notification.countDocuments({ ...baseQuery, type: { $in: ['comment_project', 'reply'] } }),
+        Notification.countDocuments({ ...baseQuery, type: { $in: ['comment_project', 'comment_post', 'reply'] } }),
         Notification.countDocuments({ ...baseQuery, type: 'mention' }),
         Notification.countDocuments({ ...baseQuery, type: { $in: ['like_project', 'like_comment'] } }),
         Notification.countDocuments({ ...baseQuery, type: 'system' }),
         Notification.countDocuments({ ...baseQuery, type: 'followed_project' }),
+        Notification.countDocuments({ ...baseQuery, type: 'followed_post' }),
     ]);
 
     let chatCount = 0;
@@ -1792,8 +1915,258 @@ app.get('/api/notifications/unread-count', auth, async (req, res) => {
             likes: likesCount,
             system: systemCount,
             followedProject: followedProjectCount,
+            followedPost: followedPostCount,
         },
     });
+});
+
+// --- 动态帖子 ---
+app.post('/api/posts', auth, async (req, res) => {
+    try {
+        const userId = String(req.user.uid || '');
+        const content = String(req.body?.content || '').trim();
+        const projectIdRaw = String(req.body?.projectId || '').trim();
+        const incomingImages = Array.isArray(req.body?.imageUrls)
+            ? req.body.imageUrls
+            : Array.isArray(req.body?.images)
+                ? req.body.images
+                : [];
+
+        if (content.length > 2000) return res.status(400).json({ message: '内容过长（最多 2000 字）' });
+
+        const images = (incomingImages || [])
+            .map((x) => (typeof x === 'string' ? x : x?.url))
+            .map((x) => String(x || '').trim())
+            .filter(Boolean)
+            .slice(0, 6)
+            .filter((url) => {
+                if (url.includes('..')) return false;
+                if (url.startsWith('/uploads/')) return true;
+                if (/^https?:\/\//i.test(url)) return true;
+                return false;
+            })
+            .map((url) => ({ url }));
+
+        if (!content && !images.length) return res.status(400).json({ message: '内容不能为空' });
+
+        let projectId = null;
+        if (projectIdRaw) {
+            if (!isValidObjectId(projectIdRaw)) return res.status(400).json({ message: 'Invalid project id' });
+            const project = await Project.findById(projectIdRaw).select('status author');
+            if (!project) return res.status(404).json({ message: 'Project not found' });
+            const isOwner = String(project.author) === String(userId);
+            if (project.status !== 'published' && !isOwner) return res.status(403).json({ message: 'Forbidden' });
+            projectId = project._id;
+        }
+
+        const post = await Post.create({
+            author: userId,
+            content,
+            project: projectId,
+            images,
+            updatedAt: new Date(),
+        });
+
+        // 通知关注者：你关注的人发布了新动态（同时给自己插一条已读，便于在动态页看到自己发布的内容）
+        try {
+            const authorDoc = await User.findById(userId).select('blockedUsers');
+            const authorBlocked = (authorDoc?.blockedUsers || []).map((id) => String(id));
+
+            const followers = await User.find({
+                following: userId,
+                blockedUsers: { $ne: userId },
+                ...(authorBlocked.length ? { _id: { $nin: authorBlocked } } : {}),
+            }).select('_id');
+
+            const recipients = new Set([String(userId)]);
+            (followers || []).forEach((f) => recipients.add(String(f._id)));
+
+            const rows = [];
+            for (const rid of recipients) {
+                const isSelf = String(rid) === String(userId);
+                const ok = isSelf ? true : await canSendNotification(rid, 'system', userId);
+                if (!ok) continue;
+                rows.push({
+                    recipient: rid,
+                    sender: userId,
+                    type: 'followed_post',
+                    post: post._id,
+                    isRead: isSelf,
+                });
+            }
+            if (rows.length) await Notification.insertMany(rows);
+        } catch (e) {
+            // ignore notify failures
+        }
+
+        const populated = await Post.findById(post._id)
+            .populate('author', 'username avatar')
+            .populate('project', 'title cover');
+
+        res.status(201).json(populated || post);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Public: get post detail
+app.get('/api/posts/:id', optionalAuth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid post id' });
+
+        const post = await Post.findById(id)
+            .populate('author', 'username avatar')
+            .populate('project', 'title cover');
+        if (!post) return res.status(404).json({ message: 'Post not found' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        const authorId = String(post.author?._id || post.author || '');
+        if (me && authorId && (await hasBlockBetween(me, authorId))) {
+            return res.status(404).json({ message: 'Post not found' });
+        }
+
+        res.json(post);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Public: list comments for a post
+app.get('/api/posts/:id/comments', optionalAuth, async (req, res) => {
+    try {
+        const postId = String(req.params.id || '').trim();
+        if (!isValidObjectId(postId)) return res.status(400).json({ message: 'Invalid post id' });
+
+        const post = await Post.findById(postId).select('author');
+        if (!post) return res.status(404).json({ message: 'Post not found' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        const authorId = String(post.author || '');
+        if (me && authorId && (await hasBlockBetween(me, authorId))) {
+            return res.status(404).json({ message: 'Post not found' });
+        }
+
+        const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
+        const query = {
+            post: postId,
+            ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
+        };
+        const comments = await Comment.find(query)
+            .populate('author', 'username avatar')
+            .populate('replyToUser', 'username avatar')
+            .sort({ createdAt: -1 });
+        res.json(comments);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Comment on a post (supports replies)
+app.post('/api/posts/:id/comments', auth, async (req, res) => {
+    try {
+        const userId = String(req.user.uid);
+        const postId = String(req.params.id || '').trim();
+        if (!isValidObjectId(postId)) return res.status(400).json({ message: 'Invalid post id' });
+
+        const post = await Post.findById(postId).select('author');
+        if (!post) return res.status(404).json({ message: 'Post not found' });
+
+        const content = String(req.body?.content || '').trim();
+        if (!content) return res.status(400).json({ message: '评论不能为空' });
+        if (content.length > 2000) return res.status(400).json({ message: '评论过长（最多 2000 字）' });
+
+        const parentId = String(req.body?.parentId || '').trim();
+        const replyToUserId = String(req.body?.replyToUserId || req.body?.replyToUser || '').trim();
+
+        if (parentId && !isValidObjectId(parentId)) return res.status(400).json({ message: 'Invalid parentId' });
+        if (replyToUserId && !isValidObjectId(replyToUserId)) return res.status(400).json({ message: 'Invalid replyToUserId' });
+
+        if (parentId) {
+            const parent = await Comment.findById(parentId).select('post');
+            if (!parent || String(parent.post || '') !== postId) {
+                return res.status(400).json({ message: 'Invalid parent comment' });
+            }
+        }
+
+        const newComment = await Comment.create({
+            content,
+            author: userId,
+            post: postId,
+            project: null,
+            parentId: parentId || null,
+            replyToUser: replyToUserId || null,
+        });
+
+        const notifiedRecipients = new Set();
+
+        if (replyToUserId && replyToUserId !== userId) {
+            const ok = await canSendNotification(replyToUserId, 'replies', userId);
+            if (ok) {
+                await Notification.create({
+                    recipient: replyToUserId,
+                    sender: userId,
+                    type: 'reply',
+                    post: postId,
+                    comment: newComment._id,
+                });
+                notifiedRecipients.add(String(replyToUserId));
+            }
+        } else {
+            const ownerId = String(post.author || '');
+            if (ownerId && ownerId !== userId) {
+                const ok = await canSendNotification(ownerId, 'replies', userId);
+                if (ok) {
+                    await Notification.create({
+                        recipient: ownerId,
+                        sender: userId,
+                        type: 'comment_post',
+                        post: postId,
+                        comment: newComment._id,
+                    });
+                    notifiedRecipients.add(ownerId);
+                }
+            }
+        }
+
+        const mentionNames = Array.from(
+            new Set(
+                Array.from(content.matchAll(/@([\w\u4e00-\u9fa5]{1,32})/g))
+                    .map((m) => m[1])
+                    .filter(Boolean)
+            )
+        ).slice(0, 8);
+
+        if (mentionNames.length) {
+            const mentionedUsers = await User.find({ username: { $in: mentionNames } }).select('_id');
+            for (const u of mentionedUsers) {
+                const rid = String(u._id);
+                if (rid === String(userId)) continue;
+                if (rid === String(replyToUserId || '')) continue;
+                if (notifiedRecipients.has(rid)) continue;
+
+                const ok = await canSendNotification(rid, 'mentions', userId);
+                if (!ok) continue;
+
+                await Notification.create({
+                    recipient: rid,
+                    sender: userId,
+                    type: 'mention',
+                    post: postId,
+                    comment: newComment._id,
+                });
+                notifiedRecipients.add(rid);
+            }
+        }
+
+        const populated = await newComment.populate([
+            { path: 'author', select: 'username avatar' },
+            { path: 'replyToUser', select: 'username avatar' },
+        ]);
+        res.status(201).json(populated);
+    } catch (err) {
+        res.status(500).json({ message: '评论失败' });
+    }
 });
 
 // 标记已读：支持按类型批量标记（不传 types 则全部标记）
@@ -2507,7 +2880,14 @@ app.post('/api/comments/:id/like', auth, async (req, res) => {
             if (comment.author.toString() !== userId) {
                 const ok = await canSendNotification(comment.author, 'likes', userId);
                 if (ok) {
-                    await Notification.create({ recipient: comment.author, sender: userId, type: 'like_comment', project: comment.project, comment: comment._id });
+                    await Notification.create({
+                        recipient: comment.author,
+                        sender: userId,
+                        type: 'like_comment',
+                        project: comment.project || undefined,
+                        post: comment.post || undefined,
+                        comment: comment._id,
+                    });
                 }
             }
         } else {

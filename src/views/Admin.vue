@@ -135,7 +135,7 @@ const formatDate = (str) => new Date(str).toLocaleString();
       </nav>
     </aside>
 
-    <main class="flex-1 glass-card border border-white/70 rounded-xl p-8 min-h-[600px] shadow-lg">
+    <main class="flex-1 glass-card border border-white/70 rounded-xl p-4 sm:p-6 lg:p-8 min-h-[420px] sm:min-h-[600px] shadow-lg">
 
       <div v-if="currentTab === 'dashboard'" class="animate-fade-in">
         <h3 class="text-2xl font-extrabold text-slate-900 mb-6">数据概览</h3>

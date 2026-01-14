@@ -5,8 +5,10 @@ const NOTIFICATION_TYPES = [
     'like_comment',
     'reply',
     'comment_project',
+    'comment_post',
     'mention',
     'followed_project',
+    'followed_post',
     'system',
 ];
 
@@ -19,7 +21,8 @@ const NotificationSchema = new mongoose.Schema({
         required: true
     },
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' }, // 关联的作品
-    comment: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment' }, // 关联的评论 (可选)
+    post: { type: mongoose.Schema.Types.ObjectId, ref: 'Post' }, // 关联的动态帖子
+    comment: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment' }, // 关联的评论(可选)
     isRead: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
 });

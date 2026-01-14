@@ -10,6 +10,14 @@ const UserSchema = new mongoose.Schema({
     role: { type: String, default: 'user', enum: ['user', 'admin'] },
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', default: [] }],
     blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', default: [] }],
+    customEmojis: {
+        type: [{
+            url: { type: String, default: '' },
+            name: { type: String, default: '' },
+            createdAt: { type: Date, default: Date.now },
+        }],
+        default: [],
+    },
     messageSettings: {
         chat: { type: Boolean, default: true },
         replies: { type: Boolean, default: true },
@@ -29,6 +37,7 @@ UserSchema.set('toJSON', {
         delete ret.password; // 这是一个好习惯，返回数据时不暴露密码
         delete ret.following;
         delete ret.blockedUsers;
+        delete ret.customEmojis;
     }
 });
 

@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
+import EmojiPicker from '../components/EmojiPicker.vue';
 import { apiForkProject, apiGetProjectLineage } from '../api/projects.js';
 
 const route = useRoute();
@@ -584,7 +585,7 @@ watch(
           </div>
         </aside>
 
-        <section class="glass-card rounded-2xl border border-white/70 overflow-hidden flex flex-col min-h-[560px]">
+        <section class="glass-card rounded-2xl border border-white/70 overflow-hidden flex flex-col min-h-[420px] md:min-h-[560px]">
           <div class="p-6 border-b border-slate-200/70 bg-white/30">
             <div class="flex items-start justify-between gap-4">
               <div>
@@ -744,7 +745,8 @@ watch(
               </UiButton>
             </div>
 
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-center">
+              <EmojiPicker v-model="newCommentContent" :target="commentInputRef" :disabled="isSubmittingComment" size="sm" />
               <input
                 id="comments-input"
                 ref="commentInputRef"

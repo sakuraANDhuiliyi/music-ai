@@ -348,7 +348,7 @@ onBeforeUnmount(() => {
           @mouseenter="onCardEnter"
           @mouseleave="onCardLeave"
         >
-        <div class="glass-card border border-white/70 rounded-2xl overflow-hidden shadow-2xl w-[320px]">
+        <div class="glass-card border border-white/70 rounded-2xl overflow-hidden shadow-2xl w-[320px] max-w-[calc(100vw-2rem)]">
           <div class="relative h-20 bg-gradient-to-r from-sky-400/25 via-indigo-400/20 to-cyan-400/25">
             <div class="absolute inset-0 aurora-noise"></div>
           </div>

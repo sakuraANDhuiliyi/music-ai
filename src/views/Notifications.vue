@@ -103,7 +103,9 @@ watch(
   }
 );
 
-const replyNotes = computed(() => notifications.value.filter((n) => n.type === 'comment_project' || n.type === 'reply'));
+const replyNotes = computed(() =>
+  notifications.value.filter((n) => n.type === 'comment_project' || n.type === 'comment_post' || n.type === 'reply')
+);
 const mentionNotes = computed(() => notifications.value.filter((n) => n.type === 'mention'));
 const likeNotes = computed(() => notifications.value.filter((n) => n.type === 'like_project' || n.type === 'like_comment'));
 const systemNotes = computed(() => notifications.value.filter((n) => n.type === 'system' || n.type === 'followed_project'));
@@ -121,7 +123,7 @@ const canClearNotes = computed(() => activeTab.value !== 'chat' && activeTab.val
 const formatDate = (dateStr) => new Date(dateStr).toLocaleString();
 
 const TAB_READ_TYPES = Object.freeze({
-  replies: ['comment_project', 'reply'],
+  replies: ['comment_project', 'comment_post', 'reply'],
   mentions: ['mention'],
   likes: ['like_project', 'like_comment'],
   system: ['system', 'followed_project'],
@@ -132,7 +134,7 @@ const tabUnreadCounts = computed(() => {
 
   for (const note of notifications.value || []) {
     if (!note || note.isRead) continue;
-    if (note.type === 'comment_project' || note.type === 'reply') counts.replies += 1;
+    if (note.type === 'comment_project' || note.type === 'comment_post' || note.type === 'reply') counts.replies += 1;
     else if (note.type === 'mention') counts.mentions += 1;
     else if (note.type === 'like_project' || note.type === 'like_comment') counts.likes += 1;
     else if (note.type === 'system' || note.type === 'followed_project') counts.system += 1;
@@ -157,6 +159,8 @@ const noteTag = (note) => {
   switch (note.type) {
     case 'comment_project':
       return '评论了你的作品';
+    case 'comment_post':
+      return '评论了你的帖子';
     case 'reply':
       return '回复了你的评论';
     case 'mention':
@@ -175,9 +179,13 @@ const noteTag = (note) => {
 };
 
 const goToTarget = (note) => {
-  if (!note?.project?.id) return;
   const query = note.comment?.id ? { comment: note.comment.id } : {};
-  router.push({ name: 'ProjectDetail', params: { id: note.project.id }, query });
+
+  const postId = note?.post?.id || note?.post?._id || note?.post;
+  if (postId) return router.push({ name: 'PostDetail', params: { id: postId }, query });
+
+  const projectId = note?.project?.id || note?.project?._id || note?.project;
+  if (projectId) return router.push({ name: 'ProjectDetail', params: { id: projectId }, query });
 };
 
 const deleteNotification = async (note) => {
@@ -208,7 +216,7 @@ const clearAllNotifications = async () => {
   }
 };
 
-const isReplyable = (note) => ['reply', 'comment_project', 'mention'].includes(note.type) && Boolean(note.comment);
+const isReplyable = (note) => ['reply', 'comment_project', 'comment_post', 'mention'].includes(note.type) && Boolean(note.comment);
 
 const openReply = (note) => {
   if (!canInteract.value) return router.push('/login');
@@ -222,7 +230,9 @@ const closeReply = () => {
 
 const submitReply = async (note) => {
   if (!canInteract.value) return router.push('/login');
-  if (!note?.project?.id || !note?.comment?.id) return;
+  const projectId = note?.project?.id || note?.project?._id || note?.project;
+  const postId = note?.post?.id || note?.post?._id || note?.post;
+  if ((!projectId && !postId) || !note?.comment?.id) return;
   const content = replyDraft.value.trim();
   if (!content) return;
 
@@ -230,7 +240,8 @@ const submitReply = async (note) => {
   try {
     const parentId = note.comment.parentId || note.comment.id;
     const replyToUserId = note.sender?.uid || note.comment.author?.uid || null;
-    const res = await authFetch(`/api/projects/${note.project.id}/comments`, {
+    const base = postId ? `/api/posts/${postId}/comments` : `/api/projects/${projectId}/comments`;
+    const res = await authFetch(base, {
       method: 'POST',
       body: JSON.stringify({ content, parentId, replyToUserId }),
     });
@@ -616,7 +627,7 @@ watch(
               </div>
             </div>
 
-            <div class="panel flex flex-col min-h-[520px]">
+            <div class="panel flex flex-col min-h-[420px] md:min-h-[520px]">
               <div class="px-4 py-3 border-b border-slate-200/70 flex items-center justify-between gap-3">
                 <div class="min-w-0">
                   <div class="text-sm font-extrabold text-slate-900 truncate">{{ selectedPeer?.username || '选择一个会话' }}</div>

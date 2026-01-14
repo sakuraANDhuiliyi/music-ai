@@ -208,7 +208,7 @@ watch(
         </div>
 
         <div class="glass-card rounded-2xl border border-white/70 overflow-hidden">
-          <div class="px-6 py-4 border-b border-slate-200/70 bg-white/40 flex items-center justify-between">
+          <div class="px-4 sm:px-6 py-4 border-b border-slate-200/70 bg-white/40 flex items-center justify-between">
             <div class="text-sm font-extrabold text-slate-900">作品</div>
             <div class="text-xs text-slate-500 font-semibold">共 {{ projects.length }} 个</div>
           </div>

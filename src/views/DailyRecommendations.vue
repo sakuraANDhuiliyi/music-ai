@@ -134,7 +134,7 @@ onMounted(() => {
       </div>
 
       <div v-else class="glass-card rounded-2xl border border-white/70 overflow-hidden">
-        <div class="px-6 py-4 border-b border-slate-200/70 flex items-center justify-between bg-white/40">
+        <div class="px-4 sm:px-6 py-4 border-b border-slate-200/70 flex items-center justify-between bg-white/40">
           <div class="text-sm text-slate-600 font-semibold">日期：{{ dateLabel || '—' }}</div>
           <div class="text-xs text-slate-500 font-semibold">共 {{ items.length }} 首/个</div>
         </div>
@@ -155,7 +155,7 @@ onMounted(() => {
           <div
             v-for="entry in items"
             :key="entry.item.id"
-            class="px-6 py-4 flex flex-col md:flex-row md:items-center gap-4 hover:bg-white/35 transition"
+            class="px-4 sm:px-6 py-4 flex flex-col md:flex-row md:items-center gap-4 hover:bg-white/35 transition"
           >
             <div class="flex items-center gap-4 flex-1">
               <div

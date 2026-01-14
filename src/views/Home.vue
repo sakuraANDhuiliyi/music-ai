@@ -30,9 +30,9 @@ const features = [
         </div>
       </div>
 
-      <div class="mt-20">
-        <div class="grid md:grid-cols-3 gap-8">
-          <div v-for="(feature, idx) in features" :key="idx" v-reveal class="glass-card p-8 rounded-2xl">
+      <div class="mt-12 sm:mt-20">
+        <div class="grid md:grid-cols-3 gap-5 sm:gap-8">
+          <div v-for="(feature, idx) in features" :key="idx" v-reveal class="glass-card p-6 sm:p-8 rounded-2xl">
             <div class="w-12 h-12 rounded-xl bg-white/70 border border-white/70 backdrop-blur-xl flex items-center justify-center mb-6 transition text-2xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.8)]">
               <i :class="feature.icon" :style="{color: feature.color}"></i>
             </div>

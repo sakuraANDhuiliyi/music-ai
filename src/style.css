@@ -22,6 +22,15 @@ body {
   color: rgb(var(--fg));
   background-color: rgb(var(--bg));
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
 }
 
 ::selection {
@@ -186,10 +195,20 @@ body {
    ========================= */
 @layer components {
   .page {
-    @apply min-h-screen pt-8 pb-16 px-4 sm:px-6 lg:px-8;
+    @apply min-h-screen pt-6 sm:pt-8 pb-24 sm:pb-16 px-4 sm:px-6 lg:px-8;
   }
   .page-container {
     @apply mx-auto max-w-7xl;
+  }
+}
+
+/* iOS safe-area bottom (home indicator) */
+.page {
+  padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+}
+@media (min-width: 640px) {
+  .page {
+    padding-bottom: calc(4rem + env(safe-area-inset-bottom));
   }
 }
 

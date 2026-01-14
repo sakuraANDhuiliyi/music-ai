@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
+import EmojiPicker from '../components/EmojiPicker.vue';
 import { apiForkProject } from '../api/projects.js';
 const router = useRouter();
 const { user } = useUser();
@@ -28,6 +29,7 @@ const comments = ref([]);
 const newCommentContent = ref('');
 const isSubmittingComment = ref(false);
 const replyTarget = ref(null);
+const commentInputEl = ref(null);
 
 // 计算属性：扁平转嵌套
 const nestedComments = computed(() => {
@@ -425,8 +427,16 @@ onBeforeUnmount(() => {
             <span>正在回复 <span class="text-sky-700 font-extrabold">@{{ replyTarget.username }}</span></span>
             <UiButton @click="cancelReply" variant="ghost" class="px-2 py-1 rounded"><i class="ph-bold ph-x"></i></UiButton>
           </div>
-          <div class="flex gap-2">
-            <input v-model="newCommentContent" @keyup.enter="submitComment" type="text" :placeholder="replyTarget ? `回复 @${replyTarget.username}...` : '发一条友善的评论...'" class="flex-1 input-glass rounded-lg px-4 py-2 text-sm" />
+          <div class="flex gap-2 items-center">
+            <EmojiPicker v-model="newCommentContent" :target="commentInputEl" :disabled="isSubmittingComment" size="sm" />
+            <input
+              ref="commentInputEl"
+              v-model="newCommentContent"
+              @keyup.enter="submitComment"
+              type="text"
+              :placeholder="replyTarget ? `回复 @${replyTarget.username}...` : '发一条友善的评论...'"
+              class="flex-1 input-glass rounded-lg px-4 py-2 text-sm"
+            />
             <UiButton @click="submitComment" variant="primary" :disabled="isSubmittingComment || !newCommentContent" class="text-white px-4 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-50">发送</UiButton>
           </div>
         </div>
