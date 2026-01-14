@@ -334,8 +334,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="min-h-screen pt-20 pb-16 px-4">
-    <div class="max-w-7xl mx-auto space-y-6">
+  <div class="page pt-4 pb-16">
+    <div class="page-container space-y-6">
       <div class="glass-card rounded-2xl border border-white/70 overflow-hidden">
         <div class="piano-topbar flex flex-col md:flex-row md:items-center md:justify-between gap-4 px-6 py-4">
           <div class="flex items-center gap-3">

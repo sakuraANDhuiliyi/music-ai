@@ -81,8 +81,8 @@ const downloadSheet = () => {
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-16 px-4">
-    <div class="max-w-5xl mx-auto space-y-6">
+  <div class="page pb-16">
+    <div class="page-container max-w-5xl space-y-6">
       <div v-reveal class="glass-card rounded-2xl p-6 border border-white/70">
         <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div>

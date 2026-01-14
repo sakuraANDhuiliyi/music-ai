@@ -12,8 +12,8 @@ const features = [
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-20">
-    <div class="max-w-7xl mx-auto px-6">
+  <div class="page pb-20">
+    <div class="page-container">
       <div class="flex flex-col items-center justify-center text-center gap-6">
         <div class="w-full flex justify-center">
           <ParticleTitle text="MuseAI" :density="3" :radius="110" class="max-w-full" />

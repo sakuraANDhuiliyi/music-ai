@@ -182,6 +182,18 @@ body {
 }
 
 /* =========================
+   Page Layout Helpers
+   ========================= */
+@layer components {
+  .page {
+    @apply min-h-screen pt-8 pb-16 px-4 sm:px-6 lg:px-8;
+  }
+  .page-container {
+    @apply mx-auto max-w-7xl;
+  }
+}
+
+/* =========================
    Scroll Reveal + Skeleton
    ========================= */
 .reveal {

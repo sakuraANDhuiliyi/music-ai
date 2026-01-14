@@ -82,8 +82,8 @@ watch(
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-16 px-4">
-    <div class="max-w-6xl mx-auto">
+  <div class="page pb-16">
+    <div class="page-container max-w-6xl">
       <div v-reveal class="glass-card rounded-2xl p-5 md:p-6 border border-white/70">
         <div class="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
           <div class="flex-1">

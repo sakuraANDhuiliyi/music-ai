@@ -13,12 +13,16 @@ import AudioToSheet from '../views/AudioToSheet.vue'
 import PianoPlay from '../views/PianoPlay.vue'
 import AiChordCreator from '../views/AiChordCreator.vue'
 import DailyRecommendations from '../views/DailyRecommendations.vue'
+import Feed from '../views/Feed.vue'
+import UserSpace from '../views/UserSpace.vue'
 import { useLoader } from '../composables/useLoader.js'
 const routes = [
     { path: '/', name: 'Home', component: Home },
     { path: '/studio/:projectId?', name: 'Studio', component: Studio },
     { path: '/explore', name: 'Explore', component: Explore },
     { path: '/daily', name: 'DailyRecommendations', component: DailyRecommendations },
+    { path: '/feed', name: 'Feed', component: Feed },
+    { path: '/u/:id', name: 'UserSpace', component: UserSpace },
     { path: '/projects/:id', name: 'ProjectDetail', component: ProjectDetail },
     { path: '/library', name: 'Library', component: Library },
     { path: '/ai-chord', name: 'AiChordCreator', component: AiChordCreator },

@@ -31,6 +31,44 @@ const isOwner = computed(() => {
   return String(me) === String(authorId);
 });
 
+const authorId = computed(() => String(project.value?.author?.uid || ''));
+const relationship = ref({ isFollowing: false, isBlocked: false, hasBlockedMe: false, isSelf: false });
+const isFollowPending = ref(false);
+
+async function fetchRelationship() {
+  relationship.value = { isFollowing: false, isBlocked: false, hasBlockedMe: false, isSelf: isOwner.value };
+  if (!user.value || !authorId.value || isOwner.value) return;
+  try {
+    const res = await authFetch(`/api/users/${encodeURIComponent(authorId.value)}/relationship`);
+    if (res.ok) relationship.value = await res.json();
+  } catch {
+    // ignore
+  }
+}
+
+async function toggleFollow() {
+  if (!authorId.value) return;
+  if (!user.value) return router.push('/login');
+  if (isOwner.value) return;
+  if (relationship.value?.hasBlockedMe || relationship.value?.isBlocked) return;
+
+  isFollowPending.value = true;
+  try {
+    const res = await authFetch(`/api/users/${encodeURIComponent(authorId.value)}/follow`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    const data = res.ok ? await res.json() : null;
+    if (res.ok && data && typeof data.isFollowing === 'boolean') {
+      relationship.value = { ...(relationship.value || {}), isFollowing: data.isFollowing };
+    }
+  } catch {
+    // ignore
+  } finally {
+    isFollowPending.value = false;
+  }
+}
+
 const lineage = ref({ parent: null, children: [], rootId: '' });
 const lineageError = ref('');
 
@@ -169,6 +207,7 @@ async function fetchProject() {
 
     hydrateProjectMeta();
     await fetchLineage();
+    await fetchRelationship();
   } catch (e) {
     projectError.value = '加载作品失败，请稍后重试';
   } finally {
@@ -309,6 +348,7 @@ watch(
   () => {
     hydrateProjectMeta();
     comments.value = hydrateCommentsMeta(comments.value);
+    fetchRelationship();
   }
 );
 
@@ -324,8 +364,8 @@ watch(
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-12 px-6">
-    <div class="max-w-6xl mx-auto">
+  <div class="page pb-12">
+    <div class="page-container max-w-6xl">
       <div class="flex items-center gap-3 mb-6">
         <UiButton @click="router.back()" variant="ghost" class="px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold">
           <i class="ph-bold ph-arrow-left"></i>
@@ -409,6 +449,17 @@ watch(
                   </div>
                   <div class="text-xs text-slate-500 font-semibold">创作者</div>
                 </div>
+
+                <UiButton
+                  v-if="!isOwner && !relationship.isBlocked && !relationship.hasBlockedMe"
+                  @click="toggleFollow"
+                  variant="secondary"
+                  class="ml-auto px-3 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1"
+                  :disabled="isFollowPending"
+                >
+                  <i :class="relationship.isFollowing ? 'ph-fill ph-check' : 'ph-bold ph-plus'"></i>
+                  {{ relationship.isFollowing ? '已关注' : '关注' }}
+                </UiButton>
               </div>
 
               <div v-if="project.tags?.length" class="mt-5 flex flex-wrap gap-2">

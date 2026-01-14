@@ -72,12 +72,12 @@ const handleSubmit = async () => {
 </script>
 
 <template>
-  <div class="min-h-screen flex items-center justify-center p-4 pt-24 pb-12 relative overflow-hidden">
+  <div class="page pb-12 flex items-center justify-center relative overflow-hidden">
     <UiButton
       v-reveal
       @click="router.push('/')"
       variant="ghost"
-      class="absolute top-20 left-4 sm:left-6 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold z-20 transition"
+      class="fixed top-20 left-4 sm:left-6 lg:left-8 px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-semibold z-20 transition"
     >
       <i class="ph-bold ph-house"></i>
       回到首页

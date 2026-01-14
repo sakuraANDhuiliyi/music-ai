@@ -17,11 +17,13 @@ const showNavbar = computed(() => route.name !== 'Studio');
 
     <Navbar v-if="showNavbar" />
 
-    <router-view v-slot="{ Component, route: r }">
-      <transition name="page" mode="out-in">
-        <component :is="Component" :key="r.fullPath" />
-      </transition>
-    </router-view>
+    <main :class="showNavbar ? 'pt-16' : ''">
+      <router-view v-slot="{ Component, route: r }">
+        <transition name="page" mode="out-in">
+          <component :is="Component" :key="r.fullPath" />
+        </transition>
+      </router-view>
+    </main>
     <MusicPlayer />
   </div>
 </template>

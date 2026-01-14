@@ -217,10 +217,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-12 px-6">
+  <div class="page pb-12">
     <div
       v-if="forkToast"
-      class="fixed top-24 right-6 z-[120] glass-card px-4 py-2 rounded-xl border border-white/70 text-sm font-semibold text-slate-800 shadow-lg"
+      class="fixed top-20 right-4 sm:right-6 lg:right-8 z-[120] glass-card px-4 py-2 rounded-xl border border-white/70 text-sm font-semibold text-slate-800 shadow-lg"
     >
       <div class="flex items-center gap-2">
         <i class="ph-bold ph-check-circle text-emerald-600"></i>
@@ -228,7 +228,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="max-w-7xl mx-auto">
+    <div class="page-container">
       <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-8">
         <div v-reveal>
           <h2 class="text-3xl font-extrabold text-slate-900 mb-2">探索社区</h2>

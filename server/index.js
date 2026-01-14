@@ -1431,6 +1431,29 @@ app.get('/api/users/:id/public', async (req, res) => {
     }
 });
 
+// Public: list a user's published projects (for personal space page)
+app.get('/api/users/:id/projects', optionalAuth, async (req, res) => {
+    try {
+        const targetId = String(req.params.id || '');
+        if (!isValidObjectId(targetId)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        if (me && (await hasBlockBetween(me, targetId))) {
+            return res.status(403).json({ message: 'Blocked' });
+        }
+
+        const filterPublished = { $or: [{ status: 'published' }, { status: { $exists: false } }] };
+        const list = await Project.find({ author: targetId, ...filterPublished })
+            .populate('author', 'username avatar')
+            .sort({ createdAt: -1 })
+            .limit(50);
+
+        res.json(list);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
 // 获取与某用户的关系（关注/拉黑）
 app.get('/api/users/:id/relationship', auth, async (req, res) => {
     try {
@@ -1687,6 +1710,28 @@ app.get('/api/notifications', auth, async (req, res) => {
         ...(blockedIds.length ? { sender: { $nin: blockedIds } } : {}),
     };
 
+    // Optional filter: ?types=followed_project,system (comma-separated)
+    try {
+        const rawTypes = String(req.query?.types || '').trim();
+        if (rawTypes) {
+            const types = rawTypes
+                .split(',')
+                .map((t) => String(t || '').trim())
+                .filter(Boolean)
+                .slice(0, 10);
+            if (types.length) query.type = { $in: types };
+        }
+    } catch { }
+
+    // Optional pagination: ?limit=20 (max 50). When omitted, returns all (backward compatible).
+    let limit = null;
+    try {
+        if (req.query?.limit != null) {
+            const n = Number(req.query?.limit);
+            if (Number.isFinite(n)) limit = Math.max(1, Math.min(50, Math.floor(n)));
+        }
+    } catch { }
+
     const notifications = await Notification.find(query)
         .populate('sender', 'username avatar')
         .populate('project', 'title cover')
@@ -1698,7 +1743,8 @@ app.get('/api/notifications', auth, async (req, res) => {
                 { path: 'replyToUser', select: 'username avatar' },
             ]
         })
-        .sort({ createdAt: -1 });
+        .sort({ createdAt: -1 })
+        .limit(limit || 0);
     res.json(notifications);
 });
 app.get('/api/notifications/unread-count', auth, async (req, res) => {
@@ -1708,12 +1754,13 @@ app.get('/api/notifications/unread-count', auth, async (req, res) => {
         isRead: false,
         ...(blockedIds.length ? { sender: { $nin: blockedIds } } : {}),
     };
-    const [count, repliesCount, mentionsCount, likesCount, systemCount] = await Promise.all([
+    const [count, repliesCount, mentionsCount, likesCount, systemCount, followedProjectCount] = await Promise.all([
         Notification.countDocuments(baseQuery),
         Notification.countDocuments({ ...baseQuery, type: { $in: ['comment_project', 'reply'] } }),
         Notification.countDocuments({ ...baseQuery, type: 'mention' }),
         Notification.countDocuments({ ...baseQuery, type: { $in: ['like_project', 'like_comment'] } }),
-        Notification.countDocuments({ ...baseQuery, type: { $in: ['system', 'followed_project'] } }),
+        Notification.countDocuments({ ...baseQuery, type: 'system' }),
+        Notification.countDocuments({ ...baseQuery, type: 'followed_project' }),
     ]);
 
     let chatCount = 0;
@@ -1744,6 +1791,7 @@ app.get('/api/notifications/unread-count', auth, async (req, res) => {
             mentions: mentionsCount,
             likes: likesCount,
             system: systemCount,
+            followedProject: followedProjectCount,
         },
     });
 });
@@ -1951,8 +1999,10 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
 
         const incomingId = String(req.body?.projectId || '').trim();
         let project = null;
+        let wasPublished = false;
         if (incomingId && mongoose.Types.ObjectId.isValid(incomingId)) {
             project = await Project.findById(incomingId).select('+projectData');
+            wasPublished = Boolean(project && String(project.status || 'draft') === 'published');
             if (!project) return res.status(404).json({ message: '作品不存在' });
             if (String(project.author) !== userId) return res.status(403).json({ message: '无权限' });
         }
@@ -1998,7 +2048,7 @@ app.post('/api/projects/publish', auth, audioUpload.single('audio'), async (req,
         }
 
         // 通知关注者：你关注的人发布了新作品
-        if (!incomingId) {
+        if (!wasPublished) {
             try {
                 const authorDoc = await User.findById(userId).select('blockedUsers');
                 const authorBlocked = (authorDoc?.blockedUsers || []).map((id) => String(id));
@@ -2185,10 +2235,19 @@ app.get('/api/projects/:id/lineage', optionalAuth, async (req, res) => {
 // 公开接口：获取作品列表
 app.get('/api/projects', optionalAuth, async (req, res) => {
     const blockedIds = req.user?.uid ? await getBlockedUserIdsFor(req.user.uid) : [];
+    const author = String(req.query.author || req.query.authorId || '').trim();
+    if (author && !isValidObjectId(author)) return res.status(400).json({ message: 'Invalid author id' });
+
     const query = {
         $or: [{ status: 'published' }, { status: { $exists: false } }],
-        ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
     };
+
+    if (author) {
+        if (blockedIds.some((id) => String(id) === author)) return res.json([]);
+        query.author = author;
+    } else if (blockedIds.length) {
+        query.author = { $nin: blockedIds };
+    }
     const projects = await Project.find(query).populate('author', 'username avatar').sort({ createdAt: -1 });
     res.json(projects);
 });

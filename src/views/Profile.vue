@@ -104,8 +104,8 @@ const handleSave = async () => {
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-12 px-6">
-    <div class="max-w-2xl mx-auto">
+  <div class="page pb-12">
+    <div class="page-container max-w-2xl">
       <div class="flex items-center gap-4 mb-8">
         <UiButton @click="router.back()" variant="ghost" class="px-3 py-2 rounded-lg flex items-center gap-1 text-sm font-semibold transition">
           <i class="ph-bold ph-arrow-left"></i> 返回

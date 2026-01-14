@@ -882,8 +882,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-12 px-6">
-    <div class="max-w-5xl mx-auto">
+  <div class="page pb-12">
+    <div class="page-container max-w-5xl">
       <div class="flex items-center justify-between mb-8">
         <div v-reveal class="flex items-center gap-4">
           <UiButton @click="router.push('/library')" variant="ghost" class="px-3 py-2 rounded-lg flex items-center gap-1 text-sm font-semibold">

@@ -500,9 +500,9 @@ watch(
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 pb-16 px-4">
-    <div class="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-[240px,1fr] gap-4 md:gap-6">
-      <aside class="md:sticky md:top-24 h-fit">
+  <div class="page pb-16">
+    <div class="page-container max-w-6xl grid grid-cols-1 md:grid-cols-[240px,1fr] gap-4 md:gap-6">
+      <aside class="md:sticky md:top-20 h-fit">
         <div class="glass-card rounded-2xl p-3">
           <div class="px-3 py-2 flex items-center justify-between gap-3">
             <div class="text-sm font-extrabold text-slate-800">消息中心</div>

@@ -96,9 +96,10 @@ const formatDate = (str) => new Date(str).toLocaleString();
 </script>
 
 <template>
-  <div class="min-h-screen pt-24 px-6 pb-10 flex gap-6">
+  <div class="page pb-10">
+    <div class="page-container flex flex-col lg:flex-row gap-6">
 
-    <aside class="w-64 glass-card border border-white/70 rounded-xl p-4 h-fit shrink-0 shadow-lg">
+    <aside class="w-full lg:w-64 glass-card border border-white/70 rounded-xl p-4 h-fit shrink-0 shadow-lg">
       <h2 class="text-xl font-extrabold text-slate-900 mb-6 px-4 flex items-center gap-2">
         <i class="ph-fill ph-shield-check text-sky-600"></i> 管理后台
       </h2>
@@ -253,6 +254,7 @@ const formatDate = (str) => new Date(str).toLocaleString();
       </div>
 
     </main>
+    </div>
   </div>
 </template>
 
