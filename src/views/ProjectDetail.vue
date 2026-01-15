@@ -647,9 +647,9 @@ watch(
                       <div class="text-[11px] text-slate-500 font-semibold">{{ formatDate(rootComment.createdAt) }}</div>
                     </div>
 
-                    <p class="text-slate-700 text-sm leading-relaxed mt-1">
+                    <div class="text-slate-700 text-sm leading-relaxed mt-1 whitespace-pre-wrap break-words">
                       <MentionText :text="rootComment.content" :highlight="user?.username || ''" />
-                    </p>
+                    </div>
 
                     <div class="flex items-center gap-4 mt-3 text-xs text-slate-500">
                       <button
@@ -700,7 +700,7 @@ watch(
                         <div class="text-[11px] text-slate-500 font-semibold">{{ formatDate(child.createdAt) }}</div>
                       </div>
 
-                      <div class="text-sm leading-relaxed text-slate-700 mt-1">
+                      <div class="text-sm leading-relaxed text-slate-700 mt-1 whitespace-pre-wrap break-words">
                         <span v-if="child.replyToUser" class="text-slate-500 text-xs">
                           回复
                           <span class="text-sky-700 font-semibold hover:underline cursor-pointer" @click="startChat(child.replyToUser)">
@@ -754,7 +754,7 @@ watch(
                 @keyup.enter="submitComment"
                 type="text"
                 :placeholder="replyTarget ? `回复 @${replyTarget.username}...` : '发一条友善的评论...'"
-                class="flex-1 input-glass rounded-lg px-4 py-2 text-sm"
+                class="flex-1 input-glass rounded-xl px-4 py-2 text-sm"
               />
               <UiButton
                 @click="submitComment"

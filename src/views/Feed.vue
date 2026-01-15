@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import EmojiPicker from '../components/EmojiPicker.vue';
 import MentionText from '../components/MentionText.vue';
+import { clearCache, fetchCached } from '../utils/resourceCache.js';
 
 const router = useRouter();
 const { user, isAuthReady } = useUser();
@@ -56,6 +57,20 @@ const timeAgo = (dateStr) => {
 const markAllRead = async () => {
   if (!user.value) return;
   try {
+    if (force) clearCache(cacheKey);
+    const cached = await fetchCached(
+      cacheKey,
+      async () => {
+        const res = await authFetch('/api/notifications?types=followed_project,followed_post&limit=50');
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.message || '加载失败');
+        return Array.isArray(json) ? json : [];
+      },
+      { ttlMs: 20_000, staleWhileRevalidate: true }
+    );
+    items.value = Array.isArray(cached) ? cached : [];
+    await markAllRead();
+    return;
     await authFetch('/api/notifications/read', {
       method: 'PUT',
       body: JSON.stringify({ types: FEED_TYPES }),
@@ -66,9 +81,12 @@ const markAllRead = async () => {
   }
 };
 
-const fetchFeed = async () => {
+const fetchFeed = async (opts = {}) => {
   if (!ensureLoggedIn()) return;
-  isLoading.value = true;
+  const force = Boolean(opts?.force);
+  const uid = String(user.value?.uid || '').trim();
+  const cacheKey = `api:/notifications:feed:${uid}`;
+  if (!force) isLoading.value = true;
   errorMsg.value = '';
   try {
     const res = await authFetch('/api/notifications?types=followed_project,followed_post&limit=50');
@@ -174,7 +192,7 @@ const publishPost = async () => {
     if (!res.ok) throw new Error(data?.message || '发布失败');
     draftContent.value = '';
     clearPickedImages();
-    await fetchFeed();
+    await fetchFeed({ force: true });
   } catch (e) {
     postError.value = e?.message || '发布失败';
   } finally {
@@ -230,7 +248,7 @@ const openItem = (note) => {
           <UiButton variant="secondary" class="px-4 py-2 rounded-xl text-sm font-semibold" :disabled="isLoading || !hasItems" @click="markAllRead">
             全部已读
           </UiButton>
-          <UiButton variant="ghost" class="px-3 py-2 rounded-xl text-sm font-semibold" @click="fetchFeed">
+          <UiButton variant="ghost" class="px-3 py-2 rounded-xl text-sm font-semibold" @click="fetchFeed({ force: true })">
             <i class="ph-bold ph-arrow-clockwise"></i>
           </UiButton>
         </div>

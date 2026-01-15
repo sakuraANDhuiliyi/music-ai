@@ -133,7 +133,6 @@ const setters = {
     audio.loop = false;
     audio.autoplay = true;
     audio.preload = true;
-    audio.crossOrigin = "anonymous";
 
     // Global playback coordinator: register once and keep it bound to the current Audio element.
     try {
@@ -232,7 +231,7 @@ const setters = {
 
     // 初始化的时候如果有音乐id，就获取一下最新的音乐内容
     if (this.musicInfo.id) {
-      this.setMusicInfo(this.musicInfo.id, true);
+      this.setMusicInfo(this.musicInfo.id, true).catch(() => {});
     }
   },
   // 清空当前的时长
@@ -330,9 +329,9 @@ const setters = {
     const musicIndex = getNextMusic(len, index, this.playModel, flag);
     const nextItem = list[musicIndex];
     if (nextItem?.source === "community" && (nextItem.url || nextItem.audioUrl)) {
-      this.setCustomTrack(nextItem);
+      this.setCustomTrack(nextItem).catch(() => {});
     } else {
-      this.setMusicInfo(nextItem.id);
+      this.setMusicInfo(nextItem.id).catch(() => {});
     }
   },
   normalizeTrack(item) {
@@ -384,36 +383,67 @@ const setters = {
   // 设置当前播放音乐的信息 搜索列表的歌曲信息时没有的需要传过来
   async setMusicInfo(id, isInit = false) {
     if (!id) return;
-    if (String(this.musicInfo?.id || "") && String(this.musicInfo?.id || "") !== String(id)) {
-      finalizePlaybackEvent(this, { completed: false });
-    }
-    const des = await getMusicDescription(id);
-    // 通过音乐id 获取音乐简介 描述 歌词信息
-    if (des) {
-      this.setMusicDescription(des[0]);
-      // Played tracks should enter the playback queue automatically
+    const prevMusicInfo = this.musicInfo;
+    const prevDescription = this.musicDescription;
+    try {
+      if (String(this.musicInfo?.id || "") && String(this.musicInfo?.id || "") !== String(id)) {
+        finalizePlaybackEvent(this, { completed: false });
+      }
+
+      const des = await getMusicDescription(id);
+      // 通过音乐id 获取音乐简介 描述 歌词信息
+      if (des && des[0]) {
+        this.setMusicDescription(des[0]);
+        // Played tracks should enter the playback queue automatically
+        try {
+          this.addToQueue(des[0]);
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const [musicDetail, lyric] = await Promise.all([
+        getMusicDetail(id),
+        getLyric(id).catch(() => ({ lyricList: [], lyricTimeList: [] })),
+      ]);
+
+      if (!musicDetail?.url) {
+        throw new Error("无法获取歌曲播放地址");
+      }
+
+      const musicInfo = {
+        id: id,
+        url: musicDetail.url, // 正在播放音乐的详情 音乐地址
+        lyricList: lyric?.lyricList || [], // 歌词列表
+        lyricTimeList: lyric?.lyricTimeList || [], // 歌词时间列表
+        source: "netease",
+        sourceId: String(id),
+      };
+
+      audio.src = musicDetail.url;
+      this.musicInfo = musicInfo;
+
+      await this.setPlay(isInit);
+    } catch (err) {
       try {
-        this.addToQueue(des[0]);
+        this.musicInfo = prevMusicInfo;
+        this.musicDescription = prevDescription;
       } catch (e) {
         // ignore
       }
+      try {
+        audio?.pause?.();
+      } catch (e) {
+        // ignore
+      }
+      try {
+        notifyPlaybackStop(PLAYBACK_SOURCE_ID);
+      } catch (e) {
+        // ignore
+      }
+      this.isPaused = true;
+      console.warn("[music] setMusicInfo failed:", err?.message || err);
     }
-
-    // 主要是获取歌曲播放的url地址
-    const musicDetail = await getMusicDetail(id);
-    const lyric = await getLyric(id);
-    let musicInfo = {
-      id: id,
-      url: musicDetail.url, // 正在播放音乐的详情 音乐地址
-      lyricList: lyric.lyricList, // 歌词列表
-      lyricTimeList: lyric.lyricTimeList, // 歌词时间列表
-      source: "netease",
-      sourceId: String(id),
-    };
-    audio.src = musicDetail.url;
-    this.musicInfo = musicInfo;
-
-    await this.setPlay(isInit);
   },
   async setCustomTrack(track, isInit = false) {
     const raw = track || {};
@@ -421,32 +451,55 @@ const setters = {
     const audioUrl = String(raw.url || raw.audioUrl || "").trim();
     if (!sourceId || !audioUrl) return;
 
-    if (String(this.musicInfo?.sourceId || "") !== sourceId || this.musicInfo?.source !== "community") {
-      finalizePlaybackEvent(this, { completed: false });
+    const prevMusicInfo = this.musicInfo;
+    const prevDescription = this.musicDescription;
+    try {
+      if (String(this.musicInfo?.sourceId || "") !== sourceId || this.musicInfo?.source !== "community") {
+        finalizePlaybackEvent(this, { completed: false });
+      }
+
+      const customId = String(raw.id || "") || `custom:${sourceId}`;
+      const name = String(raw.name || raw.title || "未命名作品");
+      const artist = String(raw.ar?.[0]?.name || raw.artistName || "创作者");
+      const coverUrl = raw.al?.picUrl || raw.coverUrl || "";
+
+      this.musicDescription = {
+        name,
+        ar: [{ name: artist }],
+        al: { picUrl: coverUrl },
+      };
+
+      this.musicInfo = {
+        id: customId,
+        url: audioUrl,
+        lyricList: [],
+        lyricTimeList: [],
+        source: "community",
+        sourceId,
+      };
+
+      audio.src = audioUrl;
+      await this.setPlay(isInit);
+    } catch (err) {
+      try {
+        this.musicInfo = prevMusicInfo;
+        this.musicDescription = prevDescription;
+      } catch (e) {
+        // ignore
+      }
+      try {
+        audio?.pause?.();
+      } catch (e) {
+        // ignore
+      }
+      try {
+        notifyPlaybackStop(PLAYBACK_SOURCE_ID);
+      } catch (e) {
+        // ignore
+      }
+      this.isPaused = true;
+      console.warn("[music] setCustomTrack failed:", err?.message || err);
     }
-
-    const customId = String(raw.id || "") || `custom:${sourceId}`;
-    const name = String(raw.name || raw.title || "未命名作品");
-    const artist = String(raw.ar?.[0]?.name || raw.artistName || "创作者");
-    const coverUrl = raw.al?.picUrl || raw.coverUrl || "";
-
-    this.musicDescription = {
-      name,
-      ar: [{ name: artist }],
-      al: { picUrl: coverUrl },
-    };
-
-    this.musicInfo = {
-      id: customId,
-      url: audioUrl,
-      lyricList: [],
-      lyricTimeList: [],
-      source: "community",
-      sourceId,
-    };
-
-    audio.src = audioUrl;
-    await this.setPlay(isInit);
   },
   setMusicDescription(val) {
     this.musicDescription = val;
@@ -672,13 +725,6 @@ function useMusic() {
     }
     unregisterPlayback = null;
   }
-
-  console.log(
-    `%c M's Music-Player %c v1.0.0 %c \n 初始化成功～`,
-    "color: #fff;background: #434345;padding: 3px 0 3px 3px; border-top-left-radius: 3px;border-bottom-left-radius: 3px;",
-    "color: #fff;background: #42d392;padding: 3px 6px 3px 0; border-top-right-radius: 3px;border-bottom-right-radius: 3px;",
-    "color: #42d392; margin-top: 5px; margin-left: -7px;"
-  );
 
   return {
     musicSetters,

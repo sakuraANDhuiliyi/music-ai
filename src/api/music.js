@@ -1,12 +1,8 @@
 import http from "@/config/music-request";
 
 /** 获取榜单 */
-export const reqToplist = () => {
-  return new Promise((resolve, reject) => {
-    http.get("/wapi/toplist/detail", {}).then((res) => {
-      resolve(res);
-    });
-  });
+export const reqToplist = async () => {
+  return await http.get("/wapi/toplist/detail");
 };
 
 /** 获取榜单歌曲列表 */
@@ -26,39 +22,21 @@ export const reqTopDetaliList = (id, limit = 100, offset = 0) => {
 };
 
 /** 获取歌曲详情 主要是播放地址 */
-export const reqMusicDetail = ({ id, level }) => {
-  return new Promise((resolve, reject) => {
-    http.get(`/wapi/song/url/v1?id=${id}&level=${level}`, {}).then((res) => {
-      resolve(res);
-    });
-  });
+export const reqMusicDetail = async ({ id, level }) => {
+  return await http.get(`/wapi/song/url/v1?id=${id}&level=${level}`);
 };
 
 // 获取音乐的描述
-export const reqMusicDescription = (id) => {
-  return new Promise((resolve, reject) => {
-    http.get(`/wapi/song/detail?ids=${id}`, {}).then((res) => {
-      resolve(res);
-    });
-  });
+export const reqMusicDescription = async (id) => {
+  return await http.get(`/wapi/song/detail?ids=${id}`);
 };
 
 // 搜索
-export const reqSearch = (keyWords, offset, limit) => {
-  return new Promise((resolve, reject) => {
-    http
-      .get(`/wapi/search?keywords=${keyWords}&offset=${offset}&limit=${limit}`, {})
-      .then((res) => {
-        resolve(res);
-      });
-  });
+export const reqSearch = async (keyWords, offset, limit) => {
+  return await http.get(`/wapi/search?keywords=${keyWords}&offset=${offset}&limit=${limit}`);
 };
 
 // 获取歌词
-export const reqMusicLyricById = (id) => {
-  return new Promise((resolve, reject) => {
-    http.get(`/wapi/lyric?id=${id}`, {}).then((res) => {
-      resolve(res);
-    });
-  });
+export const reqMusicLyricById = async (id) => {
+  return await http.get(`/wapi/lyric?id=${id}`);
 };

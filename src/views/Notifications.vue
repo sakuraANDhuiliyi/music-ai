@@ -5,6 +5,7 @@ import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
+import EmojiPicker from '../components/EmojiPicker.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -65,6 +66,7 @@ const likePending = ref({});
 
 const replyingNoteId = ref('');
 const replyDraft = ref('');
+const replyInputEl = ref(null);
 const isReplySubmitting = ref(false);
 const replySentNoteId = ref('');
 
@@ -813,7 +815,9 @@ watch(
                           </div>
 
                           <div class="flex gap-2 items-center">
+                            <EmojiPicker v-model="replyDraft" :target="replyInputEl" :disabled="isReplySubmitting" size="sm" />
                             <input
+                              ref="replyInputEl"
                               v-model="replyDraft"
                               type="text"
                               class="flex-1 input-glass rounded-xl px-4 py-2 text-sm"

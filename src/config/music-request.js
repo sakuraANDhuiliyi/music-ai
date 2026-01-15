@@ -5,8 +5,9 @@ import { APP_CONFIG } from "./appConfig.js";
 
 // 创建一个 axios 实例
 const http = axios.create({
-  timeout: APP_CONFIG.requestTimeoutMs, // 请求超时时间毫秒
-  withCredentials: true, // 异步请求携带cookie
+  baseURL: "/api",
+  timeout: Math.max(APP_CONFIG.requestTimeoutMs, 30000), // 请求超时时间毫秒
+  withCredentials: false, // 代理请求不需要携带 cookie
   headers: {
     // 设置后端需要的传参类型
     "Content-Type": "application/json",
@@ -37,7 +38,12 @@ http.interceptors.response.use(
   },
   function (error) {
     // 对响应错误做点什么
-    console.log(error);
+    try {
+      const msg = error?.response?.data?.message || error?.message || "request failed";
+      console.warn("[music] request failed:", msg);
+    } catch {
+      // ignore
+    }
     return Promise.reject(error);
   }
 );

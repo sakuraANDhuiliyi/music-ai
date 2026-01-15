@@ -26,6 +26,9 @@ const SERVER_CONFIG = {
     port: Number(process.env.PORT || 3000),
     mongoUri: process.env.MONGO_URI || '',
     jwtSecret: process.env.JWT_SECRET || 'museai-secret-key-2024',
+    musicApiBase: process.env.MUSIC_API_BASE || 'http://mrzym.top:3000',
+    musicApiBases: process.env.MUSIC_API_BASES || '',
+    musicProxyTimeoutMs: Number(process.env.MUSIC_PROXY_TIMEOUT_MS || 25000),
     ai: {
         apiKey: process.env.AI_API_KEY || '',
         model: process.env.AI_MODEL || 'glm-4.6',
@@ -39,6 +42,23 @@ const SERVER_CONFIG = {
 const AI_API_KEY = SERVER_CONFIG.ai.apiKey;
 const AI_MODEL = SERVER_CONFIG.ai.model;
 const AI_API_BASE = SERVER_CONFIG.ai.base;
+const MUSIC_API_BASE = SERVER_CONFIG.musicApiBase;
+const MUSIC_API_BASES = String(SERVER_CONFIG.musicApiBases || '')
+    .split(',')
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+const MUSIC_PROXY_TIMEOUT_MS = Number.isFinite(SERVER_CONFIG.musicProxyTimeoutMs) && SERVER_CONFIG.musicProxyTimeoutMs > 0
+    ? SERVER_CONFIG.musicProxyTimeoutMs
+    : 25000;
+
+let lastMusicProxy = {
+    okAt: null,
+    errAt: null,
+    base: null,
+    url: null,
+    status: null,
+    error: null,
+};
 
 const express = expressPkg.default || expressPkg;
 const cors = corsPkg.default || corsPkg;
@@ -436,6 +456,45 @@ app.post('/api/ai-creator', async (req, res) => {
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 app.use('/uploads', express.static(uploadDir));
+
+// --- Public emoji packs (from /public/emoji) ---
+const publicEmojiRootDir = path.resolve(__dirname, '..', 'public', 'emoji');
+const publicEmojiPicDir = path.join(publicEmojiRootDir, 'PIC');
+const publicEmojiGifDir = path.join(publicEmojiRootDir, 'GIF');
+
+const readDirSafe = async (dir) => {
+    try {
+        const list = await fs.promises.readdir(dir);
+        return Array.isArray(list) ? list : [];
+    } catch {
+        return [];
+    }
+};
+
+const sortByNumericSuffix = (prefix, files) => {
+    const p = String(prefix || '').toLowerCase();
+    const out = [];
+    for (const f of files || []) {
+        const name = String(f || '').trim();
+        const m = name.toLowerCase().match(new RegExp(`^${p}(\\d+)\\.`));
+        if (!m) continue;
+        out.push({ name, n: Number(m[1]) || 0 });
+    }
+    out.sort((a, b) => a.n - b.n);
+    return out.map((x) => x.name);
+};
+
+app.get('/api/emoji-packs', async (req, res) => {
+    const [picRaw, gifRaw] = await Promise.all([readDirSafe(publicEmojiPicDir), readDirSafe(publicEmojiGifDir)]);
+
+    const pic = sortByNumericSuffix(
+        'img',
+        (picRaw || []).filter((f) => /\.(png|jpe?g|webp|gif)$/i.test(String(f || '')))
+    );
+    const gif = sortByNumericSuffix('gif', (gifRaw || []).filter((f) => /\.gif$/i.test(String(f || ''))));
+
+    res.json({ pic, gif });
+});
 
 const postImageDir = path.join(uploadDir, 'post-images');
 if (!fs.existsSync(postImageDir)) fs.mkdirSync(postImageDir);
@@ -1670,6 +1729,108 @@ app.post('/api/upload/audio', auth, audioUpload.single('file'), (req, res) => {
         mime: String(req.file.mimetype || ''),
         filename: String(req.file.filename || ''),
     });
+});
+
+// --- Music Proxy (NetEase API) ---
+// Note: use prefix middleware to avoid path-to-regexp wildcard incompatibilities.
+app.get('/api/music-proxy/status', (req, res) => {
+    const bases = (MUSIC_API_BASES.length ? MUSIC_API_BASES : [MUSIC_API_BASE])
+        .map((b) => String(b || '').replace(/\/+$/, ''))
+        .filter(Boolean);
+    res.json({
+        ok: true,
+        bases,
+        timeoutMs: MUSIC_PROXY_TIMEOUT_MS,
+        last: lastMusicProxy,
+    });
+});
+
+app.use('/api/wapi', async (req, res) => {
+    try {
+        const upstreamPath = String(req.originalUrl || '').replace(/^\/api\/wapi/, '');
+        const bases = (MUSIC_API_BASES.length ? MUSIC_API_BASES : [MUSIC_API_BASE])
+            .map((b) => String(b || '').replace(/\/+$/, ''))
+            .filter(Boolean);
+        if (!bases.length) return res.status(500).json({ message: 'MUSIC_API_BASE 未配置' });
+
+        const method = String(req.method || 'GET').toUpperCase();
+        if (method !== 'GET' && method !== 'POST') {
+            return res.status(405).json({ message: 'Method not allowed' });
+        }
+
+        const headers = {
+            'User-Agent': req.get('user-agent') || 'Mozilla/5.0',
+            'Content-Type': 'application/json',
+        };
+
+        const timeoutMs = MUSIC_PROXY_TIMEOUT_MS;
+        let lastErr = null;
+
+        for (const base of bases) {
+            const targetUrl = `${base}${upstreamPath}`;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                const fetchOptions = {
+                    method,
+                    headers,
+                    signal: controller.signal,
+                };
+                if (method === 'POST') {
+                    fetchOptions.body = JSON.stringify(req.body || {});
+                }
+
+                const upstream = await fetch(targetUrl, fetchOptions);
+                const contentType = upstream.headers.get('content-type') || 'application/json';
+                const text = await upstream.text();
+
+                if (upstream.status >= 500) {
+                    lastErr = new Error(`Upstream error: ${upstream.status}`);
+                    lastMusicProxy = {
+                        okAt: lastMusicProxy.okAt,
+                        errAt: new Date().toISOString(),
+                        base,
+                        url: targetUrl,
+                        status: upstream.status,
+                        error: lastErr.message,
+                    };
+                    continue;
+                }
+
+                lastMusicProxy = {
+                    okAt: new Date().toISOString(),
+                    errAt: lastMusicProxy.errAt,
+                    base,
+                    url: targetUrl,
+                    status: upstream.status,
+                    error: null,
+                };
+                res.status(upstream.status);
+                res.setHeader('Content-Type', contentType);
+                return res.send(text);
+            } catch (err) {
+                lastErr = err;
+                lastMusicProxy = {
+                    okAt: lastMusicProxy.okAt,
+                    errAt: new Date().toISOString(),
+                    base,
+                    url: targetUrl,
+                    status: null,
+                    error: String(err?.message || err),
+                };
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        const msg = String(lastErr?.name || '') === 'AbortError' ? '音乐接口超时' : '音乐接口不可用';
+        return res.status(504).json({
+            message: msg,
+            hint: '请启动 NetEaseCloudMusicApi 并配置 MUSIC_API_BASE（或 MUSIC_API_BASES）',
+        });
+    } catch (err) {
+        res.status(502).json({ message: '音乐代理失败' });
+    }
 });
 
 // WAV -> MP3 转码（需要系统安装 ffmpeg）

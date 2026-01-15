@@ -20,7 +20,10 @@ const showNavbar = computed(() => route.name !== 'Studio');
     <main :class="showNavbar ? 'pt-16' : ''">
       <router-view v-slot="{ Component, route: r }">
         <transition name="page" mode="out-in">
-          <component :is="Component" :key="r.fullPath" />
+          <keep-alive v-if="r.meta?.keepAlive">
+            <component :is="Component" :key="r.name" />
+          </keep-alive>
+          <component v-else :is="Component" :key="r.fullPath" />
         </transition>
       </router-view>
     </main>

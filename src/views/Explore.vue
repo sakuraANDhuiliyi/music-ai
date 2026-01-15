@@ -7,6 +7,7 @@ import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
 import EmojiPicker from '../components/EmojiPicker.vue';
 import { apiForkProject } from '../api/projects.js';
+import { fetchCached, getCached, setCached } from '../utils/resourceCache.js';
 const router = useRouter();
 const { user } = useUser();
 const projects = ref([]);
@@ -55,9 +56,18 @@ const nestedComments = computed(() => {
 
 // 获取作品列表 (公开接口，可以使用 fetch 或 authFetch)
 const fetchProjects = async () => {
+  const cacheKey = 'api:/projects';
   try {
-    const res = await authFetch('/api/projects');
-    const data = await res.json();
+    const data = await fetchCached(
+      cacheKey,
+      async () => {
+        const res = await authFetch('/api/projects');
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.message || '加载失败');
+        return json;
+      },
+      { ttlMs: 60_000, staleWhileRevalidate: true }
+    );
     if (Array.isArray(data)) {
       projects.value = data.map(p => ({
         ...p,
@@ -88,6 +98,19 @@ const toggleLike = async (project) => {
       const data = await res.json();
       project.likesCount = data.likesCount;
       project.isLiked = data.isLiked;
+      try {
+        const cached = getCached('api:/projects');
+        if (Array.isArray(cached)) {
+          const next = cached.map((p) =>
+            String(p?.id) === String(project?.id)
+              ? { ...p, likesCount: project.likesCount, isLiked: project.isLiked }
+              : p
+          );
+          setCached('api:/projects', next, { ttlMs: 60_000 });
+        }
+      } catch {
+        // ignore
+      }
     }
   } catch (e) {
     project.isLiked = originalLiked;
@@ -355,9 +378,9 @@ onBeforeUnmount(() => {
                 <div class="text-sm font-extrabold text-slate-700 mb-1 cursor-pointer hover:text-sky-700 transition" @click="startChat(rootComment.author)">
                   {{ rootComment.author?.username }}
                 </div>
-                <p class="text-slate-700 text-sm leading-relaxed">
+                <div class="text-slate-700 text-sm leading-relaxed whitespace-pre-wrap break-words">
                   <MentionText :text="rootComment.content" :highlight="user?.username || ''" />
-                </p>
+                </div>
 
                 <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
                   <span>{{ new Date(rootComment.createdAt).toLocaleDateString() }}</span>
@@ -390,7 +413,7 @@ onBeforeUnmount(() => {
                 </UserHoverCard>
 
                 <div class="flex-1">
-                  <div class="text-sm leading-relaxed text-slate-700">
+                  <div class="text-sm leading-relaxed text-slate-700 whitespace-pre-wrap break-words">
                     <span class="font-extrabold text-slate-700 text-xs cursor-pointer hover:text-sky-700 transition" @click="startChat(child.author)">
                       {{ child.author?.username }}
                     </span>
@@ -435,7 +458,7 @@ onBeforeUnmount(() => {
               @keyup.enter="submitComment"
               type="text"
               :placeholder="replyTarget ? `回复 @${replyTarget.username}...` : '发一条友善的评论...'"
-              class="flex-1 input-glass rounded-lg px-4 py-2 text-sm"
+              class="flex-1 input-glass rounded-xl px-4 py-2 text-sm"
             />
             <UiButton @click="submitComment" variant="primary" :disabled="isSubmittingComment || !newCommentContent" class="text-white px-4 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-50">发送</UiButton>
           </div>

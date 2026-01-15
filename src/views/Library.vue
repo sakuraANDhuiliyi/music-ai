@@ -6,6 +6,7 @@ import { loadAiChordCollections, removeAiChordCollection, updateAiChordCollectio
 import { playMelody, playProgression, stopPlayback } from '../utils/chordPlayer.js';
 import { authFetch } from '../composables/useUser.js';
 import { identifyChordName } from '../utils/chordIdentify.js';
+import { clearCache, fetchCached } from '../utils/resourceCache.js';
 const router = useRouter();
 
 const hasToken = computed(() => {
@@ -145,7 +146,7 @@ const saveEdit = async () => {
       updateAiChordCollection(editDraft.value.id, payload);
     }
 
-    await refresh();
+    await refresh({ force: true });
     cancelEdit();
   } catch (e) {
     errorMsg.value = e?.message || '保存失败';
@@ -165,13 +166,36 @@ const rows = computed(() =>
   }))
 );
 
-const refresh = async () => {
+const refresh = async (opts = {}) => {
   errorMsg.value = '';
   if (!hasToken.value) {
     collections.value = loadAiChordCollections();
     return;
   }
+  const force = Boolean(opts?.force);
+  const tokenSuffix = (() => {
+    try {
+      const t = String(localStorage.getItem('token') || '');
+      return t ? t.slice(-12) : 'auth';
+    } catch {
+      return 'auth';
+    }
+  })();
+  const cacheKey = `api:/ai-chords:${tokenSuffix}`;
   try {
+    if (force) clearCache(cacheKey);
+    const cached = await fetchCached(
+      cacheKey,
+      async () => {
+        const res = await authFetch('/api/ai-chords');
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return Array.isArray(data) ? data : [];
+      },
+      { ttlMs: 120_000, staleWhileRevalidate: true }
+    );
+    collections.value = Array.isArray(cached) ? cached : [];
+    return;
     const res = await authFetch('/api/ai-chords');
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error(data?.message || '加载失败');
@@ -289,14 +313,14 @@ const editItem = (row) => startEdit(row);
 const removeItem = async (row) => {
   if (!hasToken.value) {
     removeAiChordCollection(row?.id);
-    await refresh();
+    await refresh({ force: true });
     return;
   }
   try {
     const res = await authFetch(`/api/ai-chords/${row?.id}`, { method: 'DELETE' });
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error(data?.message || '删除失败');
-    await refresh();
+    await refresh({ force: true });
   } catch (e) {
     errorMsg.value = e?.message || '删除失败';
   }

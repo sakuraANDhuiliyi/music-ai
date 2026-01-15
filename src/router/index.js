@@ -20,15 +20,15 @@ import { useLoader } from '../composables/useLoader.js'
 const routes = [
     { path: '/', name: 'Home', component: Home },
     { path: '/studio/:projectId?', name: 'Studio', component: Studio },
-    { path: '/explore', name: 'Explore', component: Explore },
+    { path: '/explore', name: 'Explore', component: Explore, meta: { keepAlive: true } },
     { path: '/daily', name: 'DailyRecommendations', component: DailyRecommendations },
-    { path: '/feed', name: 'Feed', component: Feed },
+    { path: '/feed', name: 'Feed', component: Feed, meta: { keepAlive: true } },
     { path: '/u/:id', name: 'UserSpace', component: UserSpace },
     { path: '/projects/:id', name: 'ProjectDetail', component: ProjectDetail },
     { path: '/posts/:id', name: 'PostDetail', component: PostDetail },
-    { path: '/library', name: 'Library', component: Library },
+    { path: '/library', name: 'Library', component: Library, meta: { keepAlive: true } },
     { path: '/ai-chord', name: 'AiChordCreator', component: AiChordCreator },
-    { path: '/search', name: 'Search', component: Search },
+    { path: '/search', name: 'Search', component: Search, meta: { keepAlive: true } },
     { path: '/audio-to-sheet', name: 'AudioToSheet', component: AudioToSheet },
     { path: '/piano', name: 'PianoPlay', component: PianoPlay },
     { path: '/login', name: 'Login', component: Auth, props: { initialType: 'login' } },
@@ -38,9 +38,17 @@ const routes = [
     { path: '/admin', name: 'Admin', component: Admin },
 ]
 
+const scrollPositions = new Map()
+
 const router = createRouter({
     history: createWebHistory(),
-    routes
+    routes,
+    scrollBehavior(to, from, savedPosition) {
+        if (savedPosition) return savedPosition
+        const pos = scrollPositions.get(to.fullPath)
+        if (to.meta?.keepAlive && pos) return pos
+        return { left: 0, top: 0 }
+    },
 })
 
 // Route-level loading overlay (avoid flicker with a small delay)
@@ -48,6 +56,13 @@ const { showLoading, hideLoading } = useLoader()
 let loadingTimer = null
 
 router.beforeEach((to, from, next) => {
+    try {
+        if (from?.fullPath) {
+            scrollPositions.set(from.fullPath, { left: window.scrollX || 0, top: window.scrollY || 0 })
+        }
+    } catch {
+        // ignore
+    }
     if (loadingTimer) clearTimeout(loadingTimer)
     loadingTimer = setTimeout(() => showLoading(), 120)
     next()

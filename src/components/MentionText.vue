@@ -11,10 +11,12 @@ function isAllowedEmojiUrl(rawUrl) {
   if (!url) return false;
   if (url.includes('..')) return false;
   if (url.startsWith('/uploads/')) return true;
+  if (url.startsWith('/emoji/')) return true;
   if (/^https?:\/\//i.test(url)) {
     try {
       const u = new URL(url);
-      if (!String(u.pathname || '').startsWith('/uploads/')) return false;
+      const path = String(u.pathname || '');
+      if (!path.startsWith('/uploads/') && !path.startsWith('/emoji/')) return false;
       const hostname = String(u.hostname || '');
       const localHostname = typeof window !== 'undefined' ? String(window.location.hostname || '') : '';
 
@@ -33,6 +35,12 @@ function isAllowedEmojiUrl(rawUrl) {
   return false;
 }
 
+function emojiVariant(url) {
+  const u = String(url || '');
+  if (u.includes('/uploads/emojis/') || u.includes('/emoji/')) return 'sticker';
+  return 'emoji';
+}
+
 function splitRichText(raw) {
   const text = String(raw || '');
   const parts = [];
@@ -49,7 +57,7 @@ function splitRichText(raw) {
 
     if (emojiUrl) {
       const url = String(emojiUrl || '').trim();
-      if (isAllowedEmojiUrl(url)) parts.push({ type: 'emoji', url, value: match[0] });
+      if (isAllowedEmojiUrl(url)) parts.push({ type: 'emoji', url, variant: emojiVariant(url), value: match[0] });
       else parts.push({ type: 'text', value: match[0] });
     } else if (mentionName) {
       const name = mentionName || '';
@@ -76,7 +84,7 @@ const parts = computed(() => splitRichText(props.text));
       <img
         v-else-if="p.type === 'emoji'"
         :src="p.url"
-        class="emoji"
+        :class="p.variant === 'sticker' ? 'sticker' : 'emoji'"
         loading="lazy"
         alt=""
       />
@@ -110,5 +118,18 @@ const parts = computed(() => splitRichText(props.text));
   object-fit: contain;
   vertical-align: -0.2em;
   margin: 0 0.08em;
+}
+
+.sticker {
+  display: inline-block;
+  width: clamp(38px, 10vw, 52px);
+  height: clamp(38px, 10vw, 52px);
+  object-fit: contain;
+  vertical-align: -0.12em;
+  margin: 2px 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 18px 45px -40px rgba(2, 132, 199, 0.35);
 }
 </style>
