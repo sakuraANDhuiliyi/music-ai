@@ -78,6 +78,38 @@ const downloadSheet = () => {
   a.click();
   URL.revokeObjectURL(url);
 };
+
+const buildMidiNotesFromResult = (payload) => {
+  const list = Array.isArray(payload?.midiNotes) ? payload.midiNotes : [];
+  if (list.length) return list;
+  const tickSeconds = Number(payload?.tickSeconds || 0);
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+  if (!(tickSeconds > 0) || !events.length) return [];
+  const notes = [];
+  for (const ev of events) {
+    const tick = Number(ev?.tick) || 0;
+    const start = tick * tickSeconds;
+    const ns = Array.isArray(ev?.notes) ? ev.notes : [];
+    for (const midi of ns) {
+      const m = Number(midi);
+      if (!Number.isFinite(m)) continue;
+      notes.push({ midi: Math.round(m), start, dur: tickSeconds, velocity: 0.8 });
+    }
+  }
+  return notes;
+};
+
+const importToStudio = () => {
+  const notes = buildMidiNotesFromResult(result.value || {});
+  if (!notes.length) return;
+  const key = `studio:importMidi:${Date.now()}`;
+  try {
+    localStorage.setItem(key, JSON.stringify({ notes, title: '转谱导入' }));
+  } catch {
+    return;
+  }
+  router.push({ name: 'Studio', query: { importMidiKey: key } });
+};
 </script>
 
 <template>
@@ -87,7 +119,7 @@ const downloadSheet = () => {
         <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div>
             <div class="text-lg font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-waveform text-sky-600"></i>
+              <i class="ph-bold ph-waveform text-teal-600"></i>
               音频转钢琴键位文字谱
             </div>
             <div class="text-xs text-slate-500 font-semibold mt-1">
@@ -108,7 +140,7 @@ const downloadSheet = () => {
         <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div class="glass-card rounded-2xl p-5 border border-white/70">
             <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-upload-simple text-sky-600"></i>
+              <i class="ph-bold ph-upload-simple text-teal-600"></i>
               上传音频
             </div>
             <div class="mt-3">
@@ -183,7 +215,7 @@ const downloadSheet = () => {
 
           <div class="glass-card rounded-2xl p-5 border border-white/70">
             <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-file-text text-sky-600"></i>
+              <i class="ph-bold ph-file-text text-teal-600"></i>
               输出（键位文字谱）
             </div>
 
@@ -231,6 +263,15 @@ const downloadSheet = () => {
                   <i class="ph-bold ph-download-simple"></i>
                   下载 .txt
                 </UiButton>
+                <UiButton
+                  v-if="result"
+                  variant="primary"
+                  class="px-4 py-2 rounded-xl text-xs font-semibold text-white"
+                  @click="importToStudio"
+                >
+                  <i class="ph-bold ph-upload-simple"></i>
+                  导入 Studio
+                </UiButton>
               </div>
             </div>
           </div>
@@ -239,7 +280,7 @@ const downloadSheet = () => {
 
       <div v-reveal class="glass-card rounded-2xl p-6 border border-white/70">
         <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-          <i class="ph-bold ph-lightbulb text-sky-600"></i>
+          <i class="ph-bold ph-lightbulb text-teal-600"></i>
           提升精度的小建议（低配）
         </div>
         <ul class="mt-3 text-sm text-slate-600 font-semibold space-y-2 list-disc pl-5">

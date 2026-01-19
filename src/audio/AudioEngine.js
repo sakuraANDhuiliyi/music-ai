@@ -1,3 +1,5 @@
+import { buildFxChain, getProjectFxSettings } from './fxChain.js';
+
 const dbToGain = (db) => Math.pow(10, (Number(db) || 0) / 20);
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -16,7 +18,8 @@ export default class AudioEngine {
    *  startDelaySec?: number,
    *  onTick?: (playheadSec: number) => void,
    *  context?: AudioContext,
-   *  masterGain?: number,
+  *  masterGain?: number,
+  *  fileProvider?: (assetId: string) => Promise<File|null> | File | null,
    * }=} options
    */
   constructor(options = {}) {
@@ -30,6 +33,10 @@ export default class AudioEngine {
     this._ownsContext = !this._ctx;
     this._master = null;
     this._masterGainValue = clamp(Number(options.masterGain ?? 1), 0, 2);
+    this._fxGraph = null;
+    this._fxKey = '';
+    this._fxActive = false;
+    this._fileProvider = typeof options.fileProvider === 'function' ? options.fileProvider : null;
 
     this._buffers = new Map(); // assetId -> AudioBuffer
     this._loading = new Map(); // assetId -> Promise<AudioBuffer>
@@ -56,6 +63,11 @@ export default class AudioEngine {
     return this._ensureContext();
   }
 
+  get masterInput() {
+    this._ensureContext();
+    return this._master;
+  }
+
   get isPlaying() {
     return this._isPlaying;
   }
@@ -67,6 +79,18 @@ export default class AudioEngine {
 
   setOnTick(cb) {
     this._onTick = typeof cb === 'function' ? cb : null;
+  }
+
+  setFileProvider(fn) {
+    this._fileProvider = typeof fn === 'function' ? fn : null;
+  }
+
+  async applyMasterFx(project, options = {}) {
+    if (!project) return;
+    await this._ensureFxGraph(project, {
+      active: options.active ?? this._isPlaying,
+      quality: options.quality,
+    });
   }
 
   /**
@@ -198,7 +222,7 @@ export default class AudioEngine {
    * - If `asset.audioBuffer` provided, it will be cached directly.
    * - Otherwise fetches `asset.url` and decodes.
    *
-   * @param {{ id: string, url?: string, audioBuffer?: AudioBuffer }} asset
+  * @param {{ id: string, url?: string, audioBuffer?: AudioBuffer, _file?: File }} asset
    * @returns {Promise<AudioBuffer>}
    */
   async loadAsset(asset) {
@@ -221,18 +245,49 @@ export default class AudioEngine {
     const existing = this._loading.get(id);
     if (existing) return existing;
 
+    let file = asset?._file || null;
+    if (!file && this._fileProvider) {
+      try {
+        const provided = await this._fileProvider(id);
+        if (provided) file = provided;
+      } catch {
+        // ignore
+      }
+    }
+    if (file && typeof file.arrayBuffer === 'function') {
+      const ctx = this._ensureContext();
+      await this._ensureRunning();
+      const ab = await file.arrayBuffer();
+      const buffer = await ctx.decodeAudioData(ab.slice ? ab.slice(0) : ab);
+      this._buffers.set(id, buffer);
+      return buffer;
+    }
+
     const url = String(asset?.url || '');
     if (!url) throw new Error('AudioEngine.loadAsset: missing asset.url');
+    if (url.startsWith('blob:')) {
+      throw new Error('AudioEngine.loadAsset: blob url missing local file');
+    }
 
     const promise = (async () => {
       const ctx = this._ensureContext();
       await this._ensureRunning();
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-      const ab = await res.arrayBuffer();
-      const buffer = await ctx.decodeAudioData(ab);
-      this._buffers.set(id, buffer);
-      return buffer;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+        const ab = await res.arrayBuffer();
+        const buffer = await ctx.decodeAudioData(ab);
+        this._buffers.set(id, buffer);
+        return buffer;
+      } catch (err) {
+        if (file && typeof file.arrayBuffer === 'function') {
+          const ab = await file.arrayBuffer();
+          const buffer = await ctx.decodeAudioData(ab.slice ? ab.slice(0) : ab);
+          this._buffers.set(id, buffer);
+          return buffer;
+        }
+        throw err;
+      }
     })()
       .finally(() => this._loading.delete(id));
 
@@ -264,6 +319,7 @@ export default class AudioEngine {
     this._stopAllSources();
 
     this._isPlaying = true;
+    await this._ensureFxGraph(project, { active: true });
 
     this.applyTrackMix(project, this._startCtxTime);
     this._startScheduler();
@@ -277,6 +333,7 @@ export default class AudioEngine {
     this._pausedPlayheadSec = this._computePlayheadAt(ctx.currentTime);
 
     this._isPlaying = false;
+    this._setFxActive(false);
     this._stopScheduler();
     this._stopTicking();
     this._stopAllSources();
@@ -321,6 +378,8 @@ export default class AudioEngine {
     this._loading.clear();
     this._trackNodes.clear();
 
+    this._disposeFxGraph();
+
     try {
       this._master?.disconnect?.();
     } catch {
@@ -348,7 +407,7 @@ export default class AudioEngine {
       if (!this._master) {
         this._master = this._ctx.createGain();
         this._master.gain.value = this._masterGainValue;
-        this._master.connect(this._ctx.destination);
+        this._connectMasterOutput();
       }
       return this._ctx;
     }
@@ -359,8 +418,79 @@ export default class AudioEngine {
     this._ownsContext = true;
     this._master = this._ctx.createGain();
     this._master.gain.value = this._masterGainValue;
-    this._master.connect(this._ctx.destination);
+    this._connectMasterOutput();
     return this._ctx;
+  }
+
+  _connectMasterOutput() {
+    if (!this._master || !this._ctx) return;
+    try {
+      this._master.disconnect();
+    } catch {
+      // ignore
+    }
+
+    try {
+      this._fxGraph?.output?.disconnect?.();
+    } catch {
+      // ignore
+    }
+
+    if (this._fxGraph && !this._fxGraph.bypass && this._fxActive) {
+      try {
+        this._master.connect(this._fxGraph.input);
+        this._fxGraph.output.connect(this._ctx.destination);
+        return;
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      this._master.connect(this._ctx.destination);
+    } catch {
+      // ignore
+    }
+  }
+
+  _setFxActive(active) {
+    this._fxActive = Boolean(active);
+    this._connectMasterOutput();
+  }
+
+  _disposeFxGraph() {
+    if (!this._fxGraph) return;
+    try {
+      this._fxGraph.output?.disconnect?.();
+    } catch {
+      // ignore
+    }
+    try {
+      this._fxGraph.input?.disconnect?.();
+    } catch {
+      // ignore
+    }
+    this._fxGraph = null;
+    this._fxKey = '';
+  }
+
+  async _ensureFxGraph(project, options = {}) {
+    const ctx = this._ensureContext();
+    const settings = getProjectFxSettings(project);
+    const quality = String(options.quality || settings.quality || 'low');
+    const nextKey = JSON.stringify({ settings, quality });
+
+    if (nextKey === this._fxKey && this._fxGraph) {
+      this._fxActive = Boolean(options.active);
+      this._connectMasterOutput();
+      return;
+    }
+
+    this._disposeFxGraph();
+    this._fxActive = Boolean(options.active ?? true);
+    this._fxGraph = await buildFxChain(ctx, settings, { quality, active: this._fxActive });
+    this._fxKey = nextKey;
+    this._connectMasterOutput();
   }
 
   async _ensureRunning() {

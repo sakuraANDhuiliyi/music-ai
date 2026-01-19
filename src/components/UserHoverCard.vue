@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router';
 import { authFetch, useUser } from '../composables/useUser.js';
 import UiButton from './UiButton.vue';
 import { apiUrl } from '../config/apiBase.js';
+import { fetchCached } from '../utils/resourceCache.js';
 
 const userCache = new Map();
 
@@ -79,9 +80,12 @@ const ensureProfile = async () => {
 
   isLoading.value = true;
   try {
-    const res = await fetch(apiUrl(`/api/users/${encodeURIComponent(id)}/public`));
-    if (!res.ok) throw new Error('fetch failed');
-    const data = await res.json();
+    const url = `/api/users/${encodeURIComponent(id)}/public`;
+    const data = await fetchCached(`api:${url}`, async () => {
+      const res = await fetch(apiUrl(url));
+      if (!res.ok) throw new Error('fetch failed');
+      return await res.json();
+    }, { ttlMs: 60_000, staleWhileRevalidate: true });
     userCache.set(id, data);
     profile.value = data;
   } catch (e) {
@@ -295,6 +299,13 @@ const sendMessage = () => {
   router.push({ name: 'Notifications', query: { tab: 'chat', peer: id } });
 };
 
+const goToFollowTab = (tab) => {
+  const id = String(uid.value || '');
+  if (!id) return;
+  closeNow();
+  router.push({ name: 'UserSpace', params: { id }, query: { tab } });
+};
+
 watch(
   () => router.currentRoute.value.fullPath,
   () => closeNow()
@@ -349,7 +360,7 @@ onBeforeUnmount(() => {
           @mouseleave="onCardLeave"
         >
         <div class="glass-card border border-white/70 rounded-2xl overflow-hidden shadow-2xl w-[320px] max-w-[calc(100vw-2rem)]">
-          <div class="relative h-20 bg-gradient-to-r from-sky-400/25 via-indigo-400/20 to-cyan-400/25">
+          <div class="relative h-20 bg-gradient-to-r from-teal-400/25 via-amber-300/20 to-rose-300/25">
             <div class="absolute inset-0 aurora-noise"></div>
           </div>
 
@@ -358,11 +369,11 @@ onBeforeUnmount(() => {
               <img
                 v-if="displayProfile.avatar"
                 :src="displayProfile.avatar"
-                class="w-14 h-14 rounded-2xl object-cover border border-white/80 shadow-[0_18px_45px_-35px_rgba(2,132,199,0.55)] bg-white/60"
+                class="w-14 h-14 rounded-2xl object-cover border border-white/80 shadow-[0_18px_45px_-35px_rgba(17,20,24,0.35)] bg-white/60"
               />
               <div
                 v-else
-                class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-xl font-extrabold border border-white/80 shadow-[0_18px_45px_-35px_rgba(2,132,199,0.55)]"
+                class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-teal-400 to-amber-400 flex items-center justify-center text-white text-xl font-extrabold border border-white/80 shadow-[0_18px_45px_-35px_rgba(17,20,24,0.35)]"
               >
                 {{ (displayProfile.username || 'U').charAt(0).toUpperCase() }}
               </div>
@@ -382,18 +393,26 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="mt-3 grid grid-cols-2 gap-2">
-              <div class="rounded-xl bg-white/45 border border-white/70 px-3 py-2 text-center">
+              <button
+                type="button"
+                class="rounded-xl bg-white/45 border border-white/70 px-3 py-2 text-center hover:border-teal-200/70 hover:bg-white/60 transition"
+                @click.stop="goToFollowTab('following')"
+              >
                 <div class="text-[11px] font-bold text-slate-500">关注</div>
                 <div class="text-sm font-extrabold text-slate-900">
                   {{ typeof displayProfile.followingCount === 'number' ? displayProfile.followingCount : '—' }}
                 </div>
-              </div>
-              <div class="rounded-xl bg-white/45 border border-white/70 px-3 py-2 text-center">
+              </button>
+              <button
+                type="button"
+                class="rounded-xl bg-white/45 border border-white/70 px-3 py-2 text-center hover:border-teal-200/70 hover:bg-white/60 transition"
+                @click.stop="goToFollowTab('followers')"
+              >
                 <div class="text-[11px] font-bold text-slate-500">粉丝</div>
                 <div class="text-sm font-extrabold text-slate-900">
                   {{ typeof displayProfile.followerCount === 'number' ? displayProfile.followerCount : '—' }}
                 </div>
-              </div>
+              </button>
             </div>
 
             <div v-if="isBlockedByMe" class="mt-3 text-[11px] font-bold text-rose-700 bg-rose-500/10 border border-rose-500/20 px-3 py-2 rounded-xl">
@@ -422,7 +441,7 @@ onBeforeUnmount(() => {
               <UiButton
                 v-if="canMessage"
                 variant="primary"
-                class="w-full text-white font-semibold py-2.5 rounded-xl shadow-lg shadow-sky-500/20"
+                class="w-full text-white font-semibold py-2.5 rounded-xl shadow-lg shadow-teal-500/20"
                 @click.stop="sendMessage"
               >
                 <i class="ph-bold ph-chat-circle-text"></i>

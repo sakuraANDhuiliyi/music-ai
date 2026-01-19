@@ -1,4 +1,7 @@
+import { buildFxChain, getProjectFxSettings } from './fxChain.js';
+
 const dbToGain = (db) => Math.pow(10, (Number(db) || 0) / 20);
+
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
 const isFiniteNumber = (v) => Number.isFinite(Number(v));
@@ -178,7 +181,15 @@ export async function renderProjectToAudioBuffer(project, options = {}) {
 
   const master = ctx.createGain();
   master.gain.value = 1;
-  master.connect(ctx.destination);
+  const fxSettings = getProjectFxSettings(project);
+  const fxQuality = String(options.fxQuality || fxSettings.quality || 'high');
+  const fxGraph = await buildFxChain(ctx, fxSettings, { quality: fxQuality, active: true });
+  if (fxGraph?.input && fxGraph?.output && !fxGraph.bypass) {
+    master.connect(fxGraph.input);
+    fxGraph.output.connect(ctx.destination);
+  } else {
+    master.connect(ctx.destination);
+  }
 
   const tracks = Array.isArray(project?.tracks) ? project.tracks : [];
   const assets = Array.isArray(project?.assets) ? project.assets : [];

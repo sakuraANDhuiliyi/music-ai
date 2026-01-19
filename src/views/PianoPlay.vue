@@ -28,6 +28,10 @@ const isRecording = ref(false);
 const recorder = ref(null);
 const recordChunks = ref([]);
 const recordings = ref([]);
+const isMidiRecording = ref(false);
+const midiNotes = ref([]);
+const midiActive = reactive(new Map());
+const midiRecordStartAt = ref(0);
 
 const whiteKeys = ref([]);
 const blackKeys = ref([]);
@@ -165,6 +169,11 @@ const startNote = async (midi) => {
   await ensureAudio();
   if (activeNotes.has(midi)) return;
 
+  if (isMidiRecording.value && audioCtx.value) {
+    const t = audioCtx.value.currentTime - midiRecordStartAt.value;
+    midiActive.set(midi, { start: Math.max(0, t), velocity: 0.85 });
+  }
+
   const ctx = audioCtx.value;
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
@@ -197,6 +206,16 @@ const stopNote = (midi) => {
   next.delete(midi);
   activeSet.value = next;
   if (activeNotes.size === 0) notifyPlaybackStop(SOURCE_ID);
+
+  if (isMidiRecording.value) {
+    const rec = midiActive.get(midi);
+    if (rec) {
+      const t = audioCtx.value.currentTime - midiRecordStartAt.value;
+      const dur = Math.max(0.05, t - rec.start);
+      midiNotes.value.push({ midi, start: rec.start, dur, velocity: rec.velocity || 0.8 });
+      midiActive.delete(midi);
+    }
+  }
 };
 
 const onKeyDown = (e) => {
@@ -233,6 +252,38 @@ const stopAllNotes = () => {
   activeNotes.clear();
   activeSet.value = new Set();
   notifyPlaybackStop(SOURCE_ID);
+};
+
+const startMidiRecording = async () => {
+  if (!canPlay.value) return router.push('/login');
+  await ensureAudio();
+  midiNotes.value = [];
+  midiActive.clear();
+  midiRecordStartAt.value = audioCtx.value?.currentTime || 0;
+  isMidiRecording.value = true;
+};
+
+const stopMidiRecording = () => {
+  if (!isMidiRecording.value) return;
+  for (const [midi, rec] of midiActive.entries()) {
+    const t = audioCtx.value?.currentTime || 0;
+    const dur = Math.max(0.05, t - rec.start);
+    midiNotes.value.push({ midi, start: rec.start, dur, velocity: rec.velocity || 0.8 });
+  }
+  midiActive.clear();
+  isMidiRecording.value = false;
+  midiNotes.value = midiNotes.value.slice().sort((a, b) => a.start - b.start);
+};
+
+const importMidiToStudio = () => {
+  if (!midiNotes.value.length) return;
+  const key = `studio:importMidi:${Date.now()}`;
+  try {
+    localStorage.setItem(key, JSON.stringify({ notes: midiNotes.value, title: '弹奏录制' }));
+  } catch {
+    return;
+  }
+  router.push({ name: 'Studio', query: { importMidiKey: key } });
 };
 
 const loadSheets = () => {
@@ -347,6 +398,44 @@ onBeforeUnmount(() => {
             <div class="px-3 py-1.5 rounded-full bg-white/10 border border-white/20">高音立式钢琴</div>
             <div class="px-3 py-1.5 rounded-full bg-white/10 border border-white/20">Standard</div>
             <UiButton
+              variant="secondary"
+              class="px-3 py-1.5 rounded-full text-xs font-semibold"
+              :class="isMidiRecording ? 'bg-rose-500/20 text-rose-50 border border-rose-400/40' : ''"
+              :disabled="!canPlay || isMidiRecording"
+              @click="startMidiRecording"
+            >
+              <i class="ph-bold ph-record"></i>
+              {{ isMidiRecording ? '录制中' : 'MIDI 录制' }}
+            </UiButton>
+            <UiButton
+              variant="secondary"
+              class="px-3 py-1.5 rounded-full text-xs font-semibold"
+              :disabled="!isMidiRecording"
+              @click="stopMidiRecording"
+            >
+              停止
+            </UiButton>
+            <div
+              class="px-3 py-1.5 rounded-full text-xs font-semibold"
+              :class="isMidiRecording ? 'bg-rose-500/15 text-rose-100 border border-rose-400/40' : 'bg-white/10 border border-white/20 text-white/70'"
+            >
+              <span class="inline-flex items-center gap-1">
+                <span
+                  class="w-2 h-2 rounded-full"
+                  :class="isMidiRecording ? 'bg-rose-400 animate-pulse' : 'bg-white/40'"
+                ></span>
+                {{ isMidiRecording ? '正在录制' : '未录制' }}
+              </span>
+            </div>
+            <UiButton
+              variant="primary"
+              class="px-3 py-1.5 rounded-full text-xs font-semibold text-white"
+              :disabled="!midiNotes.length"
+              @click="importMidiToStudio"
+            >
+              导入 Studio
+            </UiButton>
+            <UiButton
               v-if="!user"
               variant="secondary"
               class="px-3 py-1.5 rounded-full text-xs font-semibold"
@@ -405,7 +494,7 @@ onBeforeUnmount(() => {
         <div class="glass-card rounded-2xl border border-white/70 p-6">
           <div class="flex items-center justify-between gap-4">
             <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-file-text text-sky-600"></i>
+              <i class="ph-bold ph-file-text text-teal-600"></i>
               乐谱存放区
             </div>
             <UiButton variant="primary" class="px-4 py-2 rounded-xl text-white text-xs font-semibold" @click="saveSheet">
@@ -436,7 +525,7 @@ onBeforeUnmount(() => {
         <div class="glass-card rounded-2xl border border-white/70 p-6">
           <div class="flex items-center justify-between gap-4">
             <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-microphone-stage text-sky-600"></i>
+              <i class="ph-bold ph-microphone-stage text-teal-600"></i>
               录音素材
             </div>
             <div class="flex items-center gap-2">

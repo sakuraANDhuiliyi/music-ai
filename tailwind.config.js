@@ -5,7 +5,12 @@ export default {
         "./src/**/*.{vue,js,ts,jsx,tsx}",
     ],
     theme: {
-        extend: {},
+        extend: {
+            fontFamily: {
+                sans: ["'Noto Sans SC'", "'Space Grotesk'", "ui-sans-serif", "system-ui"],
+                display: ["'Space Grotesk'", "'Noto Sans SC'", "ui-sans-serif", "system-ui"],
+            },
+        },
     },
     plugins: [],
 }

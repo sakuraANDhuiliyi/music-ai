@@ -25,10 +25,10 @@ const resolvedType = computed(() => {
   overflow: hidden;
   background: linear-gradient(
     90deg,
-    rgb(56, 189, 248),
-    rgb(236, 72, 153),
-    rgb(250, 204, 21),
-    rgb(56, 189, 248)
+    rgb(34, 199, 184),
+    rgb(245, 178, 74),
+    rgb(240, 106, 90),
+    rgb(34, 199, 184)
   );
   background-size: 400% 100%;
   background-position: 0% 50%;
@@ -36,7 +36,7 @@ const resolvedType = computed(() => {
   border: 1px solid rgba(255, 255, 255, 0.55);
   text-shadow: 0 1px 0 rgba(2, 6, 23, 0.12);
   box-shadow:
-    0 20px 55px -34px rgba(2, 132, 199, 0.72),
+    0 20px 55px -34px rgba(17, 20, 24, 0.35),
     0 1px 0 rgba(255, 255, 255, 0.85) inset;
   transition: transform 140ms ease, box-shadow 220ms ease, filter 220ms ease, border-color 220ms ease;
   will-change: background-position, filter, transform;
@@ -65,8 +65,8 @@ const resolvedType = computed(() => {
   filter: saturate(1.28) contrast(1.07) brightness(1.03);
   border-color: rgba(255, 255, 255, 0.7);
   box-shadow:
-    0 34px 80px -44px rgba(2, 132, 199, 0.92),
-    0 22px 60px -38px rgba(168, 85, 247, 0.45),
+    0 34px 80px -44px rgba(17, 20, 24, 0.45),
+    0 22px 60px -38px rgba(240, 106, 90, 0.35),
     0 1px 0 rgba(255, 255, 255, 0.9) inset;
 }
 

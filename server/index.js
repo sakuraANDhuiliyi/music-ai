@@ -5,6 +5,7 @@ import corsPkg from 'cors';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import jwt from 'jsonwebtoken'; // [新增]
@@ -102,6 +103,57 @@ const normalizeNumberArray = (val, max = 256) => {
         .filter((v) => Number.isFinite(v))
         .slice(0, max);
 };
+const normalizeImageUrls = (incoming, max = 6) => {
+    const raw = Array.isArray(incoming) ? incoming : [];
+    return raw
+        .map((x) => (typeof x === 'string' ? x : x?.url))
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+        .slice(0, max)
+        .filter((url) => {
+            if (url.includes('..')) return false;
+            if (url.startsWith('/uploads/')) return true;
+            if (/^https?:\/\//i.test(url)) return true;
+            return false;
+        })
+        .map((url) => ({ url }));
+};
+const resolveUploadPath = (url) => {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    const marker = '/uploads/';
+    const idx = raw.indexOf(marker);
+    const rel = idx >= 0 ? raw.slice(idx + marker.length) : raw.startsWith('uploads/') ? raw.slice('uploads/'.length) : '';
+    if (!rel) return '';
+    return path.join(__dirname, 'uploads', rel);
+};
+const removeUploadedFiles = async (urls) => {
+    const list = (urls || [])
+        .map((u) => (typeof u === 'string' ? u : u?.url))
+        .map((u) => resolveUploadPath(u))
+        .filter(Boolean);
+    await Promise.all(
+        list.map(async (filePath) => {
+            try {
+                if (fs.existsSync(filePath)) await fs.promises.unlink(filePath);
+            } catch {
+                // ignore
+            }
+        })
+    );
+};
+const validateImageDimensions = async (filePath, opts = {}) => {
+    const maxWidth = Number(opts.maxWidth || 4096);
+    const maxHeight = Number(opts.maxHeight || 4096);
+    const maxPixels = Number(opts.maxPixels || 16_000_000);
+    const meta = await sharp(filePath).metadata();
+    const w = Number(meta.width || 0);
+    const h = Number(meta.height || 0);
+    if (!w || !h) return { ok: false, reason: 'Invalid image' };
+    if (w > maxWidth || h > maxHeight) return { ok: false, reason: `图片尺寸过大（最大 ${maxWidth}x${maxHeight}）` };
+    if (w * h > maxPixels) return { ok: false, reason: '图片像素过大' };
+    return { ok: true, width: w, height: h };
+};
 
 const buildItemPatchFromPayload = (raw) => {
     const payload = raw && typeof raw === 'object' ? raw : {};
@@ -178,7 +230,7 @@ const getBlockedUserIdsFor = async (meId) => {
 };
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/health', (req, res) => {
     res.json({ ok: true, ts: new Date().toISOString() });
@@ -1524,10 +1576,91 @@ app.get('/api/users/:id/public', async (req, res) => {
         if (!doc) return res.status(404).json({ message: 'User not found' });
         const followerCount = await User.countDocuments({ following: id });
         const followingCount = (doc.following || []).length;
+        const postCount = await Post.countDocuments({ author: id });
 
         const payload = doc.toJSON();
         delete payload.following;
-        res.json({ ...payload, followerCount, followingCount });
+        res.json({ ...payload, followerCount, followingCount, postCount });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+// 公开接口：用户关注列表
+app.get('/api/users/:id/following', optionalAuth, async (req, res) => {
+    try {
+        const targetId = String(req.params.id || '').trim();
+        if (!isValidObjectId(targetId)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        if (me && (await hasBlockBetween(me, targetId))) return res.json([]);
+
+        const user = await User.findById(targetId).select('following');
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const ids = (user.following || []).map((id) => String(id));
+        const blockedIds = me ? await getBlockedUserIdsFor(me) : [];
+
+        let limit = null;
+        let skip = 0;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(100, Math.floor(n)));
+            }
+            if (req.query?.page != null) {
+                const p = Number(req.query.page);
+                if (Number.isFinite(p) && p > 1) skip = (Math.floor(p) - 1) * (limit || 20);
+            }
+        } catch { }
+
+        const query = {
+            _id: {
+                $in: ids.filter((id) => isValidObjectId(id)),
+                ...(blockedIds.length ? { $nin: blockedIds } : {}),
+            },
+        };
+        let q = User.find(query).select('username avatar bio createdAt').sort({ createdAt: -1 });
+        if (skip) q = q.skip(skip);
+        if (limit) q = q.limit(limit);
+        const list = await q;
+        res.json(list);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+// 公开接口：用户粉丝列表
+app.get('/api/users/:id/followers', optionalAuth, async (req, res) => {
+    try {
+        const targetId = String(req.params.id || '').trim();
+        if (!isValidObjectId(targetId)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        if (me && (await hasBlockBetween(me, targetId))) return res.json([]);
+
+        const blockedIds = me ? await getBlockedUserIdsFor(me) : [];
+
+        let limit = null;
+        let skip = 0;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(100, Math.floor(n)));
+            }
+            if (req.query?.page != null) {
+                const p = Number(req.query.page);
+                if (Number.isFinite(p) && p > 1) skip = (Math.floor(p) - 1) * (limit || 20);
+            }
+        } catch { }
+
+        const query = {
+            following: targetId,
+            ...(blockedIds.length ? { _id: { $nin: blockedIds } } : {}),
+        };
+        let q = User.find(query).select('username avatar bio createdAt').sort({ createdAt: -1 });
+        if (skip) q = q.skip(skip);
+        if (limit) q = q.limit(limit);
+        const list = await q;
+        res.json(list);
     } catch (err) {
         res.status(500).json({ message: 'Error' });
     }
@@ -1642,22 +1775,42 @@ app.post('/api/users/:id/block', auth, async (req, res) => {
 });
 app.post('/api/upload', auth, upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: '无文件' });
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    res.json({ url: `${baseUrl}/uploads/${req.file.filename}` });
+    Promise.resolve()
+        .then(async () => {
+            const check = await validateImageDimensions(req.file.path, { maxWidth: 4096, maxHeight: 4096, maxPixels: 16_000_000 });
+            if (!check.ok) {
+                try { fs.unlinkSync(req.file.path); } catch { }
+                return res.status(400).json({ message: check.reason || '图片不符合要求' });
+            }
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            res.json({ url: `${baseUrl}/uploads/${req.file.filename}` });
+        })
+        .catch(() => res.status(500).json({ message: '图片处理失败' }));
 });
 
 app.post('/api/upload/images', auth, postImageUpload.array('files', 6), (req, res) => {
     const files = Array.isArray(req.files) ? req.files : [];
     if (!files.length) return res.status(400).json({ message: '无文件' });
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const payload = files.map((f) => ({
-        url: `${baseUrl}/uploads/post-images/${f.filename}`,
-        size: Number(f.size || 0),
-        mime: String(f.mimetype || ''),
-        filename: String(f.filename || ''),
-        originalName: String(f.originalname || ''),
-    }));
-    res.json({ files: payload, urls: payload.map((x) => x.url) });
+    Promise.resolve()
+        .then(async () => {
+            for (const f of files) {
+                const check = await validateImageDimensions(f.path, { maxWidth: 4096, maxHeight: 4096, maxPixels: 16_000_000 });
+                if (!check.ok) {
+                    try { fs.unlinkSync(f.path); } catch { }
+                    return res.status(400).json({ message: check.reason || '图片不符合要求' });
+                }
+            }
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            const payload = files.map((f) => ({
+                url: `${baseUrl}/uploads/post-images/${f.filename}`,
+                size: Number(f.size || 0),
+                mime: String(f.mimetype || ''),
+                filename: String(f.filename || ''),
+                originalName: String(f.originalname || ''),
+            }));
+            res.json({ files: payload, urls: payload.map((x) => x.url) });
+        })
+        .catch(() => res.status(500).json({ message: '图片处理失败' }));
 });
 
 // --- Custom Emojis ---
@@ -1680,6 +1833,16 @@ app.get('/api/emojis', auth, async (req, res) => {
 app.post('/api/emojis/upload', auth, emojiUpload.single('file'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: '无文件' });
+        try {
+            const check = await validateImageDimensions(req.file.path, { maxWidth: 2048, maxHeight: 2048, maxPixels: 4_000_000 });
+            if (!check.ok) {
+                try { fs.unlinkSync(req.file.path); } catch { }
+                return res.status(400).json({ message: check.reason || '图片不符合要求' });
+            }
+        } catch {
+            try { fs.unlinkSync(req.file.path); } catch { }
+            return res.status(500).json({ message: '图片处理失败' });
+        }
         const me = String(req.user.uid || '');
         const user = await User.findById(me).select('customEmojis');
         if (!user) return res.status(404).json({ message: 'User not found' });
@@ -1934,6 +2097,31 @@ app.post('/api/audio-to-sheet', auth, audioUpload.single('file'), async (req, re
         try {
             const payload = JSON.parse((stdout || '').trim());
             if (!payload?.ok) return res.status(500).json({ message: '转谱失败', detail: payload });
+
+            try {
+                const tickSeconds = Number(payload?.tickSeconds || 0);
+                const events = Array.isArray(payload?.events) ? payload.events : [];
+                if (tickSeconds > 0 && events.length) {
+                    const notes = [];
+                    for (const ev of events) {
+                        const tick = Number(ev?.tick) || 0;
+                        const start = tick * tickSeconds;
+                        const list = Array.isArray(ev?.notes) ? ev.notes : [];
+                        for (const midi of list) {
+                            const m = Number(midi);
+                            if (!Number.isFinite(m)) continue;
+                            notes.push({
+                                midi: Math.round(m),
+                                start,
+                                dur: tickSeconds,
+                                velocity: 0.8,
+                            });
+                        }
+                    }
+                    payload.midiNotes = notes;
+                }
+            } catch { }
+
             return res.json(payload);
         } catch (e) {
             return res.status(500).json({ message: '转谱失败（解析输出异常）', detail: stdout || stderr });
@@ -1962,8 +2150,17 @@ app.get('/api/admin/projects', adminAuth, async (req, res) => {
     res.json(projects);
 });
 app.delete('/api/admin/projects/:id', adminAuth, async (req, res) => {
-    await Project.findByIdAndDelete(req.params.id);
-    await Comment.deleteMany({ project: req.params.id });
+    const id = String(req.params.id || '').trim();
+    if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+    const project = await Project.findById(id).select('cover audioUrl');
+    const commentRows = await Comment.find({ project: id }).select('images');
+    const commentImages = commentRows.flatMap((c) => c?.images || []);
+    await Project.findByIdAndDelete(id);
+    await Comment.deleteMany({ project: id });
+    await Notification.deleteMany({ project: id });
+    await ProjectVersion.deleteMany({ project: id });
+    await removeUploadedFiles(commentImages);
+    await removeUploadedFiles([project?.cover, project?.audioUrl]);
     res.json({ success: true });
 });
 app.get('/api/admin/comments', adminAuth, async (req, res) => {
@@ -1971,7 +2168,31 @@ app.get('/api/admin/comments', adminAuth, async (req, res) => {
     res.json(comments);
 });
 app.delete('/api/admin/comments/:id', adminAuth, async (req, res) => {
-    await Comment.findByIdAndDelete(req.params.id);
+    const id = String(req.params.id || '').trim();
+    if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid comment id' });
+    const rows = await Comment.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(id) } },
+        {
+            $graphLookup: {
+                from: 'comments',
+                startWith: '$_id',
+                connectFromField: '_id',
+                connectToField: 'parentId',
+                as: 'descendants',
+            },
+        },
+        {
+            $project: {
+                ids: { $concatArrays: [['$_id'], '$descendants._id'] },
+                images: { $concatArrays: [{ $ifNull: ['$images', []] }, '$descendants.images'] },
+            },
+        },
+    ]);
+    const ids = Array.isArray(rows?.[0]?.ids) ? rows[0].ids.map((x) => String(x)) : [id];
+    const images = Array.isArray(rows?.[0]?.images) ? rows[0].images : [];
+    await Comment.deleteMany({ _id: { $in: ids } });
+    await Notification.deleteMany({ comment: { $in: ids } });
+    await removeUploadedFiles(images);
     res.json({ success: true });
 });
 // 临时提权接口
@@ -2193,6 +2414,67 @@ app.get('/api/posts/:id', optionalAuth, async (req, res) => {
     }
 });
 
+// 删除动态（作者本人）
+app.delete('/api/posts/:id', auth, async (req, res) => {
+    try {
+        const userId = String(req.user.uid || '');
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid post id' });
+
+        const post = await Post.findById(id).select('author images');
+        if (!post) return res.status(404).json({ message: 'Post not found' });
+        if (String(post.author) !== String(userId)) return res.status(403).json({ message: 'Forbidden' });
+
+        const commentRows = await Comment.find({ post: id }).select('images');
+        const commentImages = commentRows.flatMap((c) => c?.images || []);
+
+        await Post.deleteOne({ _id: id });
+        await Comment.deleteMany({ post: id });
+        await Notification.deleteMany({ post: id });
+        await removeUploadedFiles(post.images || []);
+        await removeUploadedFiles(commentImages);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Public: list posts by user
+app.get('/api/users/:id/posts', optionalAuth, async (req, res) => {
+    try {
+        const targetId = String(req.params.id || '').trim();
+        if (!isValidObjectId(targetId)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const me = req.user?.uid ? String(req.user.uid) : '';
+        if (me && (await hasBlockBetween(me, targetId))) return res.json([]);
+
+        let limit = null;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(50, Math.floor(n)));
+            }
+        } catch { }
+        const before = String(req.query?.before || '').trim();
+        const beforeDate = before ? new Date(before) : null;
+
+        const query = { author: targetId };
+        if (beforeDate && !Number.isNaN(beforeDate.getTime())) {
+            query.createdAt = { $lt: beforeDate };
+        }
+
+        let q = Post.find(query)
+            .populate('author', 'username avatar')
+            .populate('project', 'title cover')
+            .sort({ createdAt: -1 });
+        if (limit) q = q.limit(limit);
+        const posts = await q;
+        res.json(posts);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
 // Public: list comments for a post
 app.get('/api/posts/:id/comments', optionalAuth, async (req, res) => {
     try {
@@ -2213,10 +2495,25 @@ app.get('/api/posts/:id/comments', optionalAuth, async (req, res) => {
             post: postId,
             ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
         };
-        const comments = await Comment.find(query)
+        const before = String(req.query?.before || '').trim();
+        const beforeDate = before ? new Date(before) : null;
+        if (beforeDate && !Number.isNaN(beforeDate.getTime())) {
+            query.createdAt = { $lt: beforeDate };
+        }
+        let limit = null;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(100, Math.floor(n)));
+            }
+        } catch { }
+
+        let q = Comment.find(query)
             .populate('author', 'username avatar')
             .populate('replyToUser', 'username avatar')
             .sort({ createdAt: -1 });
+        if (limit) q = q.limit(limit);
+        const comments = await q;
         res.json(comments);
     } catch (err) {
         res.status(500).json({ message: 'Error' });
@@ -2234,7 +2531,15 @@ app.post('/api/posts/:id/comments', auth, async (req, res) => {
         if (!post) return res.status(404).json({ message: 'Post not found' });
 
         const content = String(req.body?.content || '').trim();
-        if (!content) return res.status(400).json({ message: '评论不能为空' });
+        const images = normalizeImageUrls(
+            Array.isArray(req.body?.imageUrls)
+                ? req.body.imageUrls
+                : Array.isArray(req.body?.images)
+                    ? req.body.images
+                    : [],
+            6
+        );
+        if (!content && !images.length) return res.status(400).json({ message: '评论不能为空' });
         if (content.length > 2000) return res.status(400).json({ message: '评论过长（最多 2000 字）' });
 
         const parentId = String(req.body?.parentId || '').trim();
@@ -2252,6 +2557,7 @@ app.post('/api/posts/:id/comments', auth, async (req, res) => {
 
         const newComment = await Comment.create({
             content,
+            images,
             author: userId,
             post: postId,
             project: null,
@@ -2389,6 +2695,158 @@ app.get('/api/projects/:id/source', auth, async (req, res) => {
                 status: project.status,
                 updatedAt: project.updatedAt,
             },
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 版本历史（仅作者可见）
+app.get('/api/projects/:id/versions', auth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+
+        const project = await Project.findById(id).select('author headVersionId');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author) !== String(req.user.uid)) {
+            return res.status(403).json({ message: '无权限' });
+        }
+
+        const limit = Math.min(50, Math.max(1, Number(req.query?.limit) || 20));
+        const items = await ProjectVersion.find({ project: id })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .select('versionId parentVersionId kind author createdAt title note restoredFrom')
+            .lean();
+
+        res.json({ items, headVersionId: String(project.headVersionId || '') });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 创建版本快照（仅作者可见）
+app.post('/api/projects/:id/versions', auth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+
+        const project = await Project.findById(id).select('+projectData');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author) !== String(req.user.uid)) {
+            return res.status(403).json({ message: '无权限' });
+        }
+
+        const payload = req.body || {};
+        const title = String(payload.title || payload.name || '').trim().slice(0, 80);
+        const note = String(payload.note || '').trim().slice(0, 500);
+        const projectData = payload.project || payload.projectData || project.projectData || null;
+        if (!projectData) return res.status(400).json({ message: '工程内容为空' });
+
+        const versionId = createVersionId();
+        const created = await ProjectVersion.create({
+            project: id,
+            versionId,
+            parentVersionId: String(project.headVersionId || ''),
+            kind: 'snapshot',
+            author: req.user.uid,
+            projectData,
+            title,
+            note,
+        });
+
+        project.headVersionId = versionId;
+        project.updatedAt = new Date();
+        if (payload.project || payload.projectData) {
+            project.projectData = projectData;
+        }
+        try {
+            if (project.projectData && typeof project.projectData === 'object') {
+                project.projectData.fork = project.projectData.fork && typeof project.projectData.fork === 'object'
+                    ? project.projectData.fork
+                    : {};
+                project.projectData.fork.versionId = versionId;
+            }
+        } catch { }
+        await project.save();
+
+        res.status(201).json({
+            version: {
+                id: String(created._id),
+                versionId,
+                parentVersionId: String(created.parentVersionId || ''),
+                kind: created.kind,
+                createdAt: created.createdAt,
+                title,
+                note,
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// 回滚到指定版本（仅作者可见）
+app.post('/api/projects/:id/versions/:versionId/restore', auth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '');
+        const versionId = String(req.params.versionId || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+        if (!versionId) return res.status(400).json({ message: 'Invalid version id' });
+
+        const project = await Project.findById(id).select('+projectData');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author) !== String(req.user.uid)) {
+            return res.status(403).json({ message: '无权限' });
+        }
+
+        const target = await ProjectVersion.findOne({ project: id, versionId }).select('+projectData');
+        if (!target) return res.status(404).json({ message: '版本不存在' });
+        if (!target.projectData) return res.status(400).json({ message: '版本内容为空' });
+
+        const payload = req.body || {};
+        const title = String(payload.title || `恢复 ${versionId}`).trim().slice(0, 80);
+        const note = String(payload.note || '').trim().slice(0, 500);
+
+        const previousHead = String(project.headVersionId || '');
+        const newVersionId = createVersionId();
+        const restored = await ProjectVersion.create({
+            project: id,
+            versionId: newVersionId,
+            parentVersionId: previousHead,
+            kind: 'restore',
+            author: req.user.uid,
+            projectData: target.projectData,
+            title,
+            note,
+            restoredFrom: versionId,
+        });
+
+        project.projectData = target.projectData;
+        project.headVersionId = newVersionId;
+        project.updatedAt = new Date();
+        try {
+            if (project.projectData && typeof project.projectData === 'object') {
+                project.projectData.fork = project.projectData.fork && typeof project.projectData.fork === 'object'
+                    ? project.projectData.fork
+                    : {};
+                project.projectData.fork.versionId = newVersionId;
+            }
+        } catch { }
+        await project.save();
+
+        res.json({
+            project: project.projectData,
+            version: {
+                versionId: newVersionId,
+                parentVersionId: previousHead,
+                kind: 'restore',
+                createdAt: restored?.createdAt || new Date(),
+                restoredFrom: versionId,
+                title,
+                note,
+            }
         });
     } catch (err) {
         res.status(500).json({ message: 'Error' });
@@ -2772,6 +3230,21 @@ app.get('/api/projects', optionalAuth, async (req, res) => {
     const author = String(req.query.author || req.query.authorId || '').trim();
     if (author && !isValidObjectId(author)) return res.status(400).json({ message: 'Invalid author id' });
 
+    let limit = null;
+    let skip = 0;
+    try {
+        if (req.query?.limit != null) {
+            const n = Number(req.query.limit);
+            if (Number.isFinite(n)) limit = Math.max(1, Math.min(50, Math.floor(n)));
+        }
+        if (req.query?.page != null) {
+            const p = Number(req.query.page);
+            if (Number.isFinite(p) && p > 1) skip = (Math.floor(p) - 1) * (limit || 20);
+        }
+    } catch { }
+    const before = String(req.query?.before || '').trim();
+    const beforeDate = before ? new Date(before) : null;
+
     const query = {
         $or: [{ status: 'published' }, { status: { $exists: false } }],
     };
@@ -2782,8 +3255,44 @@ app.get('/api/projects', optionalAuth, async (req, res) => {
     } else if (blockedIds.length) {
         query.author = { $nin: blockedIds };
     }
-    const projects = await Project.find(query).populate('author', 'username avatar').sort({ createdAt: -1 });
+    if (beforeDate && !Number.isNaN(beforeDate.getTime())) {
+        query.createdAt = { $lt: beforeDate };
+    }
+    let q = Project.find(query).populate('author', 'username avatar').sort({ createdAt: -1 });
+    if (skip) q = q.skip(skip);
+    if (limit) q = q.limit(limit);
+    const projects = await q;
     res.json(projects);
+});
+
+// 获取草稿工程列表（仅本人）
+app.get('/api/projects/drafts', auth, async (req, res) => {
+    try {
+        const author = String(req.query.author || req.user.uid || '').trim();
+        if (!author || !isValidObjectId(author)) return res.status(400).json({ message: 'Invalid author id' });
+        if (String(author) !== String(req.user.uid)) return res.status(403).json({ message: '无权限' });
+
+        let limit = null;
+        let skip = 0;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(50, Math.floor(n)));
+            }
+            if (req.query?.page != null) {
+                const p = Number(req.query.page);
+                if (Number.isFinite(p) && p > 1) skip = (Math.floor(p) - 1) * (limit || 20);
+            }
+        } catch { }
+
+        let q = Project.find({ author, status: 'draft' }).populate('author', 'username avatar').sort({ updatedAt: -1 });
+        if (skip) q = q.skip(skip);
+        if (limit) q = q.limit(limit);
+        const drafts = await q;
+        res.json(drafts);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
 });
 // 发布作品 (需要登录)
 app.post('/api/projects', auth, async (req, res) => {
@@ -2846,6 +3355,31 @@ app.post('/api/projects', auth, async (req, res) => {
 
         const populated = await Project.findById(project._id).populate('author', 'username avatar');
         res.status(201).json(populated || project);
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+// 删除作品（作者本人）
+app.delete('/api/projects/:id', auth, async (req, res) => {
+    try {
+        const userId = String(req.user.uid || '');
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid project id' });
+
+        const project = await Project.findById(id).select('author cover audioUrl');
+        if (!project) return res.status(404).json({ message: '作品不存在' });
+        if (String(project.author) !== String(userId)) return res.status(403).json({ message: 'Forbidden' });
+
+        const commentRows = await Comment.find({ project: id }).select('images');
+        const commentImages = commentRows.flatMap((c) => c?.images || []);
+
+        await Project.deleteOne({ _id: id });
+        await Comment.deleteMany({ project: id });
+        await Notification.deleteMany({ project: id });
+        await ProjectVersion.deleteMany({ project: id });
+        await removeUploadedFiles(commentImages);
+        await removeUploadedFiles([project.cover, project.audioUrl]);
+        res.json({ success: true });
     } catch (err) {
         res.status(500).json({ message: 'Error' });
     }
@@ -2955,10 +3489,25 @@ app.get('/api/projects/:id/comments', optionalAuth, async (req, res) => {
             project: req.params.id,
             ...(blockedIds.length ? { author: { $nin: blockedIds } } : {}),
         };
-        const comments = await Comment.find(query)
+        const before = String(req.query?.before || '').trim();
+        const beforeDate = before ? new Date(before) : null;
+        if (beforeDate && !Number.isNaN(beforeDate.getTime())) {
+            query.createdAt = { $lt: beforeDate };
+        }
+        let limit = null;
+        try {
+            if (req.query?.limit != null) {
+                const n = Number(req.query.limit);
+                if (Number.isFinite(n)) limit = Math.max(1, Math.min(100, Math.floor(n)));
+            }
+        } catch { }
+
+        let q = Comment.find(query)
             .populate('author', 'username avatar')
             .populate('replyToUser', 'username avatar')
             .sort({ createdAt: -1 });
+        if (limit) q = q.limit(limit);
+        const comments = await q;
         res.json(comments);
     } catch (err) {
         res.status(500).json({ message: 'Error' });
@@ -2968,15 +3517,39 @@ app.get('/api/projects/:id/comments', optionalAuth, async (req, res) => {
 app.post('/api/projects/:id/comments', auth, async (req, res) => {
     try {
         const userId = req.user.uid; // ✅ 从 Token 获取
-        const { content, parentId, replyToUserId } = req.body;
+        const content = String(req.body?.content || '').trim();
+        const parentId = String(req.body?.parentId || '').trim();
+        const replyToUserId = String(req.body?.replyToUserId || req.body?.replyToUser || '').trim();
+        const images = normalizeImageUrls(
+            Array.isArray(req.body?.imageUrls)
+                ? req.body.imageUrls
+                : Array.isArray(req.body?.images)
+                    ? req.body.images
+                    : [],
+            6
+        );
         const projectDoc = await Project.findById(req.params.id).select('author status');
         if (!projectDoc) return res.status(404).json({ message: '作品不存在' });
         if (String(projectDoc.status || 'published') !== 'published' && String(projectDoc.author) !== String(userId)) {
             return res.status(404).json({ message: '作品不存在' });
         }
 
+        if (!content && !images.length) return res.status(400).json({ message: '评论不能为空' });
+        if (content.length > 2000) return res.status(400).json({ message: '评论过长（最多 2000 字）' });
+        if (parentId && !isValidObjectId(parentId)) return res.status(400).json({ message: 'Invalid parentId' });
+        if (replyToUserId && !isValidObjectId(replyToUserId)) return res.status(400).json({ message: 'Invalid replyToUserId' });
+        if (parentId) {
+            const parent = await Comment.findById(parentId).select('project');
+            if (!parent || String(parent.project || '') !== String(req.params.id)) {
+                return res.status(400).json({ message: 'Invalid parent comment' });
+            }
+        }
+
         const newComment = new Comment({
-            content, author: userId, project: req.params.id,
+            content,
+            images,
+            author: userId,
+            project: req.params.id,
             parentId: parentId || null, replyToUser: replyToUserId || null
         });
         await newComment.save();
@@ -3028,6 +3601,47 @@ app.post('/api/projects/:id/comments', auth, async (req, res) => {
         const populated = await newComment.populate([{ path: 'author', select: 'username avatar' }, { path: 'replyToUser', select: 'username avatar' }]);
         res.status(201).json(populated);
     } catch (err) { res.status(500).json({ message: '评论失败' }); }
+});
+// 删除评论（作者本人，可级联删除回复）
+app.delete('/api/comments/:id', auth, async (req, res) => {
+    try {
+        const userId = String(req.user.uid || '');
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid comment id' });
+
+        const comment = await Comment.findById(id).select('author');
+        if (!comment) return res.status(404).json({ message: 'Comment not found' });
+        if (String(comment.author) !== String(userId)) return res.status(403).json({ message: 'Forbidden' });
+
+        const rows = await Comment.aggregate([
+            { $match: { _id: new mongoose.Types.ObjectId(id) } },
+            {
+                $graphLookup: {
+                    from: 'comments',
+                    startWith: '$_id',
+                    connectFromField: '_id',
+                    connectToField: 'parentId',
+                    as: 'descendants',
+                },
+            },
+            {
+                $project: {
+                    ids: { $concatArrays: [['$_id'], '$descendants._id'] },
+                    images: { $concatArrays: [{ $ifNull: ['$images', []] }, '$descendants.images'] },
+                },
+            },
+        ]);
+
+        const ids = Array.isArray(rows?.[0]?.ids) ? rows[0].ids.map((x) => String(x)) : [id];
+        const images = Array.isArray(rows?.[0]?.images) ? rows[0].images : [];
+
+        await Comment.deleteMany({ _id: { $in: ids } });
+        await Notification.deleteMany({ comment: { $in: ids } });
+        await removeUploadedFiles(images);
+        res.json({ success: true, deletedIds: ids });
+    } catch (err) {
+        res.status(500).json({ message: 'Error' });
+    }
 });
 // 评论点赞 (需要登录)
 app.post('/api/comments/:id/like', auth, async (req, res) => {

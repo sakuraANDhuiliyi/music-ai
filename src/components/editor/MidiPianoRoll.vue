@@ -244,7 +244,7 @@ watch(
           v-for="n in visibleNotes"
           :key="n.id"
           class="absolute rounded-md border border-white/70 bg-white/65 text-slate-900 shadow-sm"
-          :class="String(selectedNoteId) === String(n.id) ? 'ring-4 ring-sky-300/30' : ''"
+          :class="String(selectedNoteId) === String(n.id) ? 'ring-4 ring-teal-300/30' : ''"
           :style="{
             left: Math.round((Math.max(0, (Number(n.start) || 0) - clipOffset) * pxPerSecond)) + 'px',
             top: Math.round(yFromMidi(Number(n.midi) || 60)) + 'px',

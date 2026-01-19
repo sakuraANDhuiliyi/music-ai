@@ -55,15 +55,15 @@ const resolvedType = computed(() => {
 }
 
 .ui-btn--primary {
-  background: linear-gradient(135deg, rgb(56, 189, 248), rgb(99, 102, 241));
+  background: linear-gradient(135deg, rgb(34, 199, 184), rgb(245, 178, 74));
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.65);
-  box-shadow: 0 18px 45px -28px rgba(2, 132, 199, 0.75);
+  box-shadow: 0 18px 45px -28px rgba(17, 20, 24, 0.35);
 }
 .ui-btn--primary:hover {
   transform: translateY(-1px);
   filter: saturate(1.07);
-  box-shadow: 0 22px 55px -32px rgba(2, 132, 199, 0.85);
+  box-shadow: 0 22px 55px -32px rgba(17, 20, 24, 0.4);
 }
 .ui-btn--primary:active {
   transform: translateY(0) scale(0.98);
@@ -71,21 +71,21 @@ const resolvedType = computed(() => {
 .ui-btn--primary:focus-visible {
   box-shadow:
     0 0 0 4px rgba(var(--accent), 0.22),
-    0 18px 45px -28px rgba(2, 132, 199, 0.75);
+    0 18px 45px -28px rgba(17, 20, 24, 0.35);
 }
 
 .ui-btn--secondary {
   background: rgba(255, 255, 255, 0.7);
   color: rgb(var(--fg));
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  box-shadow: 0 14px 35px -30px rgba(2, 132, 199, 0.25);
+  border: 1px solid rgba(170, 165, 156, 0.45);
+  box-shadow: 0 14px 35px -30px rgba(17, 20, 24, 0.18);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
 .ui-btn--secondary:hover {
   transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.45);
-  box-shadow: 0 20px 55px -45px rgba(2, 132, 199, 0.45);
+  border-color: rgba(34, 199, 184, 0.45);
+  box-shadow: 0 20px 55px -45px rgba(17, 20, 24, 0.25);
 }
 .ui-btn--secondary:active {
   transform: translateY(0) scale(0.98);
@@ -93,7 +93,7 @@ const resolvedType = computed(() => {
 .ui-btn--secondary:focus-visible {
   box-shadow:
     0 0 0 4px rgba(var(--accent), 0.2),
-    0 14px 35px -30px rgba(2, 132, 199, 0.25);
+    0 14px 35px -30px rgba(17, 20, 24, 0.18);
 }
 
 .ui-btn--ghost {
@@ -104,7 +104,7 @@ const resolvedType = computed(() => {
 .ui-btn--ghost:hover {
   color: rgb(var(--fg));
   background: rgba(255, 255, 255, 0.55);
-  border-color: rgba(148, 163, 184, 0.22);
+  border-color: rgba(170, 165, 156, 0.35);
 }
 .ui-btn--ghost:active {
   transform: scale(0.98);
@@ -126,4 +126,3 @@ const resolvedType = computed(() => {
   }
 }
 </style>
-

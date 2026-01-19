@@ -101,33 +101,33 @@ const formatDate = (str) => new Date(str).toLocaleString();
 
     <aside class="w-full lg:w-64 glass-card border border-white/70 rounded-xl p-4 h-fit shrink-0 shadow-lg">
       <h2 class="text-xl font-extrabold text-slate-900 mb-6 px-4 flex items-center gap-2">
-        <i class="ph-fill ph-shield-check text-sky-600"></i> 管理后台
+        <i class="ph-fill ph-shield-check text-teal-600"></i> 管理后台
       </h2>
       <nav class="space-y-2">
         <button
             @click="currentTab = 'dashboard'"
-            :class="currentTab === 'dashboard' ? 'bg-gradient-to-r from-sky-500 to-indigo-500 text-white shadow-[0_18px_45px_-35px_rgba(2,132,199,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
+            :class="currentTab === 'dashboard' ? 'bg-gradient-to-r from-teal-500 to-amber-500 text-white shadow-[0_18px_45px_-35px_rgba(34,199,184,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
             class="w-full text-left px-4 py-3 rounded-lg transition font-medium flex items-center gap-3"
         >
           <i class="ph-bold ph-squares-four"></i> 仪表盘
         </button>
         <button
             @click="fetchData('users')"
-            :class="currentTab === 'users' ? 'bg-gradient-to-r from-sky-500 to-indigo-500 text-white shadow-[0_18px_45px_-35px_rgba(2,132,199,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
+            :class="currentTab === 'users' ? 'bg-gradient-to-r from-teal-500 to-amber-500 text-white shadow-[0_18px_45px_-35px_rgba(34,199,184,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
             class="w-full text-left px-4 py-3 rounded-lg transition font-medium flex items-center gap-3"
         >
           <i class="ph-bold ph-users"></i> 用户管理
         </button>
         <button
             @click="fetchData('projects')"
-            :class="currentTab === 'projects' ? 'bg-gradient-to-r from-sky-500 to-indigo-500 text-white shadow-[0_18px_45px_-35px_rgba(2,132,199,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
+            :class="currentTab === 'projects' ? 'bg-gradient-to-r from-teal-500 to-amber-500 text-white shadow-[0_18px_45px_-35px_rgba(34,199,184,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
             class="w-full text-left px-4 py-3 rounded-lg transition font-medium flex items-center gap-3"
         >
           <i class="ph-bold ph-music-notes"></i> 作品管理
         </button>
         <button
             @click="fetchData('comments')"
-            :class="currentTab === 'comments' ? 'bg-gradient-to-r from-sky-500 to-indigo-500 text-white shadow-[0_18px_45px_-35px_rgba(2,132,199,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
+            :class="currentTab === 'comments' ? 'bg-gradient-to-r from-teal-500 to-amber-500 text-white shadow-[0_18px_45px_-35px_rgba(34,199,184,0.7)]' : 'text-slate-700 hover:bg-white/40 hover:text-slate-900'"
             class="w-full text-left px-4 py-3 rounded-lg transition font-medium flex items-center gap-3"
         >
           <i class="ph-bold ph-chat-text"></i> 评论管理
@@ -140,17 +140,17 @@ const formatDate = (str) => new Date(str).toLocaleString();
       <div v-if="currentTab === 'dashboard'" class="animate-fade-in">
         <h3 class="text-2xl font-extrabold text-slate-900 mb-6">数据概览</h3>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div class="relative overflow-hidden bg-gradient-to-br from-sky-500/15 to-indigo-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
-            <div class="text-sky-700 mb-2 font-semibold">总用户数</div>
+          <div class="relative overflow-hidden bg-gradient-to-br from-teal-500/15 to-amber-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
+            <div class="text-teal-700 mb-2 font-semibold">总用户数</div>
             <div class="text-5xl font-extrabold text-slate-900">{{ stats.userCount }}</div>
-            <i class="ph-duotone ph-users text-sky-500/20 absolute -top-3 -right-2 text-7xl"></i>
+            <i class="ph-duotone ph-users text-teal-500/20 absolute -top-3 -right-2 text-7xl"></i>
           </div>
-          <div class="relative overflow-hidden bg-gradient-to-br from-indigo-500/12 to-cyan-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
-            <div class="text-indigo-700 mb-2 font-semibold">作品总数</div>
+          <div class="relative overflow-hidden bg-gradient-to-br from-amber-500/12 to-cyan-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
+            <div class="text-amber-700 mb-2 font-semibold">作品总数</div>
             <div class="text-5xl font-extrabold text-slate-900">{{ stats.projectCount }}</div>
-            <i class="ph-duotone ph-music-notes text-indigo-500/18 absolute -top-3 -right-2 text-7xl"></i>
+            <i class="ph-duotone ph-music-notes text-amber-500/18 absolute -top-3 -right-2 text-7xl"></i>
           </div>
-          <div class="relative overflow-hidden bg-gradient-to-br from-cyan-500/12 to-sky-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
+          <div class="relative overflow-hidden bg-gradient-to-br from-cyan-500/12 to-teal-500/10 border border-white/70 p-6 rounded-xl hover:scale-[1.02] transition duration-300">
             <div class="text-cyan-700 mb-2 font-semibold">评论总数</div>
             <div class="text-5xl font-extrabold text-slate-900">{{ stats.commentCount }}</div>
             <i class="ph-duotone ph-chat-centered-text text-cyan-500/18 absolute -top-3 -right-2 text-7xl"></i>
@@ -195,12 +195,12 @@ const formatDate = (str) => new Date(str).toLocaleString();
                 <div v-if="currentTab === 'users'" class="flex items-center gap-3">
                   <div class="w-8 h-8 rounded-full bg-white/55 border border-white/70 overflow-hidden flex items-center justify-center text-xs font-extrabold text-white shadow-sm">
                     <img v-if="item.avatar" :src="item.avatar" class="w-full h-full object-cover">
-                    <span v-else class="w-full h-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center">{{ item.username.charAt(0).toUpperCase() }}</span>
+                    <span v-else class="w-full h-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center">{{ item.username.charAt(0).toUpperCase() }}</span>
                   </div>
                   <div>
                     <div class="font-extrabold text-slate-900 flex items-center gap-2">
                       {{ item.username }}
-                      <span v-if="item.role==='admin'" class="bg-gradient-to-r from-sky-500 to-indigo-500 text-white text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider">Admin</span>
+                      <span v-if="item.role==='admin'" class="bg-gradient-to-r from-teal-500 to-amber-500 text-white text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider">Admin</span>
                     </div>
                   </div>
                 </div>
@@ -223,7 +223,7 @@ const formatDate = (str) => new Date(str).toLocaleString();
                 </div>
                 <div v-else>
                   <div class="flex items-center gap-1 text-xs text-slate-500 mb-0.5"><i class="ph-bold ph-arrow-elbow-down-right"></i> 来源</div>
-                  <span class="text-sky-700 font-semibold">{{ item.author?.username }}</span>
+                  <span class="text-teal-700 font-semibold">{{ item.author?.username }}</span>
                   <span class="mx-1">在</span>
                   <span class="text-slate-900 font-semibold">《{{ item.project?.title || '未知作品' }}》</span>
                 </div>

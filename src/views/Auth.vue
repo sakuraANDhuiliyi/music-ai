@@ -83,8 +83,8 @@ const handleSubmit = async () => {
       回到首页
     </UiButton>
 
-    <div class="absolute top-[-10%] left-[-10%] w-[520px] h-[520px] bg-sky-400/20 rounded-full blur-[120px]"></div>
-    <div class="absolute bottom-[-10%] right-[-10%] w-[520px] h-[520px] bg-indigo-400/20 rounded-full blur-[120px]"></div>
+    <div class="absolute top-[-10%] left-[-10%] w-[520px] h-[520px] bg-teal-400/20 rounded-full blur-[120px]"></div>
+    <div class="absolute bottom-[-10%] right-[-10%] w-[520px] h-[520px] bg-amber-400/20 rounded-full blur-[120px]"></div>
 
     <div v-reveal class="w-full max-w-md glass-card border border-white/70 p-8 rounded-2xl shadow-2xl relative z-10">
       <div class="text-center mb-8">
@@ -97,7 +97,7 @@ const handleSubmit = async () => {
       </div>
 
       <div v-if="isRestoring" class="py-10 text-center text-slate-600">
-        <i class="ph-bold ph-spinner animate-spin text-3xl text-sky-600"></i>
+        <i class="ph-bold ph-spinner animate-spin text-3xl text-teal-600"></i>
         <p class="mt-3 font-semibold">正在恢复登录状态</p>
         <p class="text-xs text-slate-500 mt-1">请稍后...</p>
       </div>
@@ -150,7 +150,7 @@ const handleSubmit = async () => {
       <div v-if="!isRestoring" class="mt-6 text-center">
         <p class="text-slate-600 text-sm">
           {{ type === 'login' ? '还没有账号？' : '已有账号？' }}
-          <button @click="toggleType" type="button" class="ml-2 text-sky-700 hover:text-sky-600 font-semibold">
+          <button @click="toggleType" type="button" class="ml-2 text-teal-700 hover:text-teal-600 font-semibold">
             {{ type === 'login' ? '免费注册' : '直接登录' }}
           </button>
         </p>

@@ -10,16 +10,21 @@ import UiButton from '../components/UiButton.vue';
 import { createMockProject } from '../components/editor/mockProject.js';
 import { computePeaks } from '../audio/peaks.js';
 import { renderProjectToWavFile } from '../audio/mixdown.js';
+import { normalizeFxSettings } from '../audio/fxChain.js';
+import { loadAudioFile, saveAudioFile, removeAudioFile, getStorageEstimate } from '../utils/audioFileCache.js';
 import AudioEngine from '../audio/AudioEngine.js';
 import MidiEngine from '../audio/MidiEngine.js';
 import { getSharedAudioContext } from '../audio/sharedAudioContext.js';
 import { notifyPlaybackStop, registerPlaybackSource, requestPlaybackStart } from '../audio/playbackCoordinator.js';
 import { noteToMidi } from '../utils/musicNotes.js';
-import { loadProjectDraft, saveProjectDraft } from '../utils/projectStorage.js';
+import { loadProjectDraft, saveProjectDraft, removeProjectDraft } from '../utils/projectStorage.js';
 import {
   apiCreateProjectDraft,
+  apiCreateProjectVersion,
   apiGetProjectSource,
+  apiGetProjectVersions,
   apiPublishProject,
+  apiRestoreProjectVersion,
   apiUpdateProjectDraft,
   apiUploadAudioFile,
   isMongoObjectId,
@@ -28,7 +33,98 @@ import {
 const route = useRoute();
 const router = useRouter();
 
-const projectId = computed(() => String(route.params.projectId || route.query.projectId || 'proj_demo'));
+const LAST_STUDIO_PROJECT_KEY = 'studio:lastProjectId';
+const LAST_STUDIO_SNAPSHOT_KEY = 'studio:lastSnapshot';
+const DRAFT_MAP_KEY = 'studio:draftMap';
+
+const readLastStudioProjectId = () => {
+  try {
+    return String(localStorage.getItem(LAST_STUDIO_PROJECT_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const writeLastStudioProjectId = (id) => {
+  const next = String(id || '').trim();
+  if (!next || next === 'proj_demo') return;
+  try {
+    localStorage.setItem(LAST_STUDIO_PROJECT_KEY, next);
+  } catch {
+    // ignore
+  }
+};
+
+const readDraftMap = () => {
+  try {
+    const raw = localStorage.getItem(DRAFT_MAP_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeDraftMap = (map) => {
+  try {
+    localStorage.setItem(DRAFT_MAP_KEY, JSON.stringify(map || {}));
+  } catch {
+    // ignore
+  }
+};
+
+const getDraftMapId = (localId) => {
+  const id = String(localId || '').trim();
+  if (!id) return '';
+  const map = readDraftMap();
+  return String(map[id] || '').trim();
+};
+
+const setDraftMapId = (localId, serverId) => {
+  const lid = String(localId || '').trim();
+  const sid = String(serverId || '').trim();
+  if (!lid || !sid) return;
+  const map = readDraftMap();
+  map[lid] = sid;
+  writeDraftMap(map);
+};
+
+const saveLastStudioSnapshot = (id, project) => {
+  const payload = {
+    id: String(id || '').trim(),
+    savedAt: new Date().toISOString(),
+    project,
+  };
+  try {
+    localStorage.setItem(LAST_STUDIO_SNAPSHOT_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+};
+
+const loadLastStudioSnapshot = (id) => {
+  try {
+    const raw = localStorage.getItem(LAST_STUDIO_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.project) return null;
+    const snapId = String(parsed.id || '').trim();
+    if (id && snapId && snapId !== String(id).trim()) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const resolveRouteProjectId = () => String(route.params.projectId || route.query.projectId || '').trim();
+
+const projectId = computed(() => {
+  const routeId = resolveRouteProjectId();
+  if (routeId) return routeId;
+  const saved = readLastStudioProjectId();
+  return saved || 'proj_demo';
+});
 const resolvedProjectDocId = ref('');
 
 const hasToken = () => {
@@ -60,10 +156,81 @@ const publishTagsText = ref('');
 const publishAudioFile = ref(null);
 const isPublishing = ref(false);
 const isRenderingPreview = ref(false);
+const isSavingDraft = ref(false);
 
 const exportOpen = ref(false);
 const isExportingWav = ref(false);
 const isExportingMp3 = ref(false);
+const isRegionDrawing = ref(false);
+const fxOpen = ref(false);
+const isLoadingProject = ref(false);
+const isRehydratingAssets = ref(false);
+
+const versionsOpen = ref(false);
+const versions = ref([]);
+const headVersionId = ref('');
+const versionTitle = ref('');
+const versionNote = ref('');
+const isLoadingVersions = ref(false);
+const isCreatingVersion = ref(false);
+const isRestoringVersion = ref(false);
+const isLoggedIn = computed(() => hasToken());
+const isVersionLoginTipOpen = ref(false);
+const missingAudioAssets = ref([]);
+
+const isProjectEmpty = computed(() => {
+  const tracks = Array.isArray(project.value?.tracks) ? project.value.tracks : [];
+  const clips = Array.isArray(project.value?.clips) ? project.value.clips : [];
+  const assets = Array.isArray(project.value?.assets) ? project.value.assets : [];
+  return tracks.length === 0 && clips.length === 0 && assets.length === 0;
+});
+
+const cleanupProjectAudioCache = async (proj) => {
+  const assets = Array.isArray(proj?.assets) ? proj.assets : [];
+  const ids = assets
+    .filter((a) => String(a?.type || '') === 'audio')
+    .map((a) => String(a?.id || ''))
+    .filter(Boolean);
+  for (const id of ids) {
+    localAudioFilesByAssetId.delete(id);
+    try {
+      await removeAudioFile(id);
+    } catch {
+      // ignore
+    }
+  }
+};
+
+const clearProject = async () => {
+  if (!confirm('确定清空当前工程？该操作会移除所有轨道与素材。')) return;
+  const current = serializeProjectForStorage(project.value);
+  await cleanupProjectAudioCache(current);
+  const id = String(project.value?.meta?.id || projectId.value || '').trim();
+  if (id) removeProjectDraft(id);
+  project.value = createMockProject(id || 'proj_demo');
+  ensureFxSettings();
+  audioEngine.value?.applyMasterFx?.(project.value, { active: false });
+  audioEngine.value?.applyTrackMix?.(project.value);
+  audioEngine.value?.applyClipMix?.(project.value);
+  midiEngine.value?.applyTrackMix?.(project.value);
+  touch();
+};
+
+const createNewProject = async () => {
+  if (!confirm('新建工程将关闭当前工程，是否继续？')) return;
+  const current = serializeProjectForStorage(project.value);
+  await cleanupProjectAudioCache(current);
+  const newId = createId('proj');
+  project.value = createMockProject(newId);
+  ensureFxSettings();
+  audioEngine.value?.applyMasterFx?.(project.value, { active: false });
+  audioEngine.value?.applyTrackMix?.(project.value);
+  audioEngine.value?.applyClipMix?.(project.value);
+  midiEngine.value?.applyTrackMix?.(project.value);
+  writeLastStudioProjectId(newId);
+  router.replace({ name: 'Studio', params: { projectId: newId } }).catch(() => {});
+  touch();
+};
 
 const clipboardToast = ref('');
 const clipboardToastTone = ref('ok');
@@ -80,6 +247,58 @@ const showSaveToast = (message, tone = 'ok') => {
   saveToastTimer = window.setTimeout(() => {
     saveToast.value = '';
   }, 1800);
+};
+
+const saveDraftNow = async () => {
+  if (isSavingDraft.value) return;
+  if (!hasToken()) {
+    alert('请先登录后再保存草稿');
+    return;
+  }
+  isSavingDraft.value = true;
+  try {
+    const docId = await ensureServerDraft();
+    const payload = serializeProjectForStorage(project.value);
+    await apiUpdateProjectDraft(docId, { project: payload, title: payload?.meta?.title || '' });
+    const localId = String(project.value?.meta?.id || projectId.value || '').trim();
+    if (localId && docId) setDraftMapId(localId, docId);
+    showSaveToast('草稿已保存');
+  } catch (e) {
+    showSaveToast(e?.message || '草稿保存失败', 'error');
+  } finally {
+    isSavingDraft.value = false;
+  }
+};
+
+const ensureFxSettings = () => {
+  project.value.fx = normalizeFxSettings(project.value?.fx || project.value?.meta?.fx || {});
+};
+
+const commitFxSettings = () => {
+  ensureFxSettings();
+  touch();
+  audioEngine.value?.applyMasterFx?.(project.value, { active: isPlaying.value });
+};
+
+const previewFxSettings = () => {
+  ensureFxSettings();
+  audioEngine.value?.applyMasterFx?.(project.value, { active: isPlaying.value });
+};
+
+const finalizeProjectLoad = () => {
+  ensureFxSettings();
+  audioEngine.value?.applyMasterFx?.(project.value, { active: isPlaying.value });
+  audioEngine.value?.applyTrackMix?.(project.value);
+  audioEngine.value?.applyClipMix?.(project.value);
+  midiEngine.value?.applyTrackMix?.(project.value);
+
+  isLoadingProject.value = false;
+  isRehydratingAssets.value = true;
+  rehydrateLocalAudioAssets()
+    .catch(() => {})
+    .finally(() => {
+      isRehydratingAssets.value = false;
+    });
 };
 
 const downloadBlob = (blob, filename) => {
@@ -129,6 +348,7 @@ const exportMixdownWav = async () => {
       sampleRate: 44100,
       filesByAssetId: localAudioFilesByAssetId,
       maxDurationSec: 600,
+      fxQuality: 'high',
     });
     downloadBlob(file, file.name);
   } catch (e) {
@@ -152,6 +372,7 @@ const exportMixdownMp3 = async () => {
       sampleRate: 44100,
       filesByAssetId: localAudioFilesByAssetId,
       maxDurationSec: 600,
+      fxQuality: 'high',
     });
     const res = await authFetch('/api/convert/mp3', { method: 'POST', body: (() => { const f = new FormData(); f.append('file', wav); return f; })() });
     const data = await res.json().catch(() => null);
@@ -174,18 +395,6 @@ const showClipboardToast = (message, tone = 'ok') => {
   }, 1800);
 };
 
-const decodeBase64Utf8 = (b64) => {
-  const raw = String(b64 || '');
-  if (!raw) return '';
-  try {
-    const bin = atob(raw);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    return new TextDecoder('utf-8').decode(bytes);
-  } catch {
-    return '';
-  }
-};
-
 const encodeBase64Utf8 = (text) => {
   const raw = String(text || '');
   try {
@@ -193,6 +402,18 @@ const encodeBase64Utf8 = (text) => {
     let bin = '';
     for (let i = 0; i < bytes.length; i += 1) bin += String.fromCharCode(bytes[i]);
     return btoa(bin);
+  } catch {
+    return '';
+  }
+};
+
+const decodeBase64Utf8 = (b64) => {
+  const raw = String(b64 || '');
+  if (!raw) return '';
+  try {
+    const bin = atob(raw);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
   } catch {
     return '';
   }
@@ -383,6 +604,97 @@ const pasteFromSystemClipboardAtPlayhead = async () => {
   return false;
 };
 
+const importMidiNotes = (notes, options = {}) => {
+  const list = Array.isArray(notes) ? notes : [];
+  if (!list.length) return false;
+  pushHistory();
+
+  const cleaned = list
+    .map((n) => ({
+      midi: Math.round(Number(n?.midi)),
+      start: Math.max(0, Number(n?.start) || 0),
+      dur: Math.max(0.05, Number(n?.dur) || 0.2),
+      velocity: Math.max(0.05, Math.min(1, Number(n?.velocity) || 0.8)),
+    }))
+    .filter((n) => Number.isFinite(n.midi) && n.midi >= 0 && n.midi <= 127);
+  if (!cleaned.length) return false;
+
+  cleaned.sort((a, b) => (a.start - b.start));
+  const duration = Math.max(0.1, ...cleaned.map((n) => n.start + n.dur));
+
+  const assetId = createId('asset_midi');
+  const clipId = createId('clip_midi');
+
+  const asset = {
+    id: assetId,
+    type: 'midi',
+    url: options?.title ? String(options.title) : 'MIDI Import',
+    duration,
+    sampleRate: 0,
+    channels: 0,
+    hash: `midi_import:${Date.now()}`,
+    peaks: { kind: 'none' },
+    data: {
+      kind: 'midi',
+      notes: cleaned,
+    },
+  };
+
+  let targetTrackId = project.value.tracks.find((t) => t.type === 'midi')?.id || null;
+  if (!targetTrackId) targetTrackId = addTrack('midi', { commit: false });
+  if (!targetTrackId) return false;
+
+  const startAt = options?.startAt != null ? Number(options.startAt) : 0;
+
+  const clip = {
+    id: clipId,
+    trackId: targetTrackId,
+    assetId,
+    start: Math.max(0, startAt),
+    length: duration,
+    offset: 0,
+    gain: 0,
+    pan: 0,
+    playbackRate: 1,
+    fadeIn: 0,
+    fadeOut: 0,
+    fadeInCurve: 'linear',
+    fadeOutCurve: 'linear',
+  };
+
+  project.value.assets = [asset, ...project.value.assets];
+  project.value.clips = [...project.value.clips, clip];
+  selectedClipIds.value = [clipId];
+  selectedTrackId.value = String(targetTrackId);
+  touch();
+  return true;
+};
+
+const loadImportMidiFromRoute = () => {
+  const key = String(route.query?.importMidiKey || '').trim();
+  const b64 = String(route.query?.importMidi || '').trim();
+  let payload = null;
+
+  if (key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) payload = JSON.parse(raw);
+      localStorage.removeItem(key);
+    } catch {
+      payload = null;
+    }
+  } else if (b64) {
+    const raw = decodeBase64Utf8(b64);
+    payload = tryParseJson(raw);
+  }
+
+  const notes = Array.isArray(payload?.notes) ? payload.notes : Array.isArray(payload) ? payload : [];
+  if (notes.length) {
+    importMidiNotes(notes, { title: payload?.title || 'MIDI 导入', startAt: 0 });
+    router.replace({ query: { ...route.query, importMidiKey: undefined, importMidi: undefined } }).catch(() => {});
+  }
+};
+
 const undoStack = ref([]);
 const redoStack = ref([]);
 const HISTORY_LIMIT = 50;
@@ -438,6 +750,128 @@ const serializeProjectForStorage = (runtimeProject) => {
   return snap;
 };
 
+const formatVersionTime = (value) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString();
+};
+
+const versionKindLabel = (kind) => {
+  const k = String(kind || 'snapshot');
+  if (k === 'publish') return '发布';
+  if (k === 'fork') return 'Fork';
+  if (k === 'restore') return '回滚';
+  return '快照';
+};
+
+const ensureServerDraft = async () => {
+  if (!hasToken()) throw new Error('版本管理需要登录');
+  const routeId = String(projectId.value || '').trim();
+  const existing = resolvedProjectDocId.value || (isMongoObjectId(routeId) ? routeId : '');
+  if (existing) return existing;
+
+  const payload = serializeProjectForStorage(project.value);
+  const created = await apiCreateProjectDraft({ project: payload, title: payload?.meta?.title || '' });
+  const newId = String(created?.id || created?._id || '').trim();
+  if (newId && isMongoObjectId(newId)) {
+    resolvedProjectDocId.value = newId;
+    project.value.meta.id = newId;
+    skipNextLoadId = newId;
+    router.replace({ name: 'Studio', params: { projectId: newId } }).catch(() => {});
+    return newId;
+  }
+  throw new Error('创建草稿失败');
+};
+
+const loadVersions = async () => {
+  if (isLoadingVersions.value) return;
+  isLoadingVersions.value = true;
+  try {
+    const docId = await ensureServerDraft();
+    const data = await apiGetProjectVersions(docId, { limit: 30 });
+    versions.value = Array.isArray(data?.items) ? data.items : [];
+    headVersionId.value = String(data?.headVersionId || '');
+  } catch (e) {
+    showSaveToast(e?.message || '加载版本失败', 'error');
+  } finally {
+    isLoadingVersions.value = false;
+  }
+};
+
+const openVersionsPanel = async () => {
+  versionsOpen.value = true;
+  await loadVersions();
+};
+
+const goLoginFromVersions = () => {
+  router.push({ name: 'Login', query: { redirect: route.fullPath } }).catch(() => {});
+};
+
+const createVersionSnapshot = async () => {
+  if (isCreatingVersion.value) return;
+  isCreatingVersion.value = true;
+  try {
+    const docId = await ensureServerDraft();
+    const payload = serializeProjectForStorage(project.value);
+    await apiCreateProjectVersion(docId, {
+      title: String(versionTitle.value || '').trim(),
+      note: String(versionNote.value || '').trim(),
+      project: payload,
+    });
+    versionTitle.value = '';
+    versionNote.value = '';
+    await loadVersions();
+    showSaveToast('已创建版本快照');
+  } catch (e) {
+    showSaveToast(e?.message || '创建版本失败', 'error');
+  } finally {
+    isCreatingVersion.value = false;
+  }
+};
+
+const restoreVersionSnapshot = async (item) => {
+  if (isRestoringVersion.value) return;
+  const targetId = String(item?.versionId || '').trim();
+  if (!targetId) return;
+  if (!window.confirm(`确定回滚到版本 ${targetId} 吗？当前未保存的修改将被覆盖。`)) return;
+
+  isRestoringVersion.value = true;
+  isRestoring.value = true;
+  try {
+    const docId = await ensureServerDraft();
+    const data = await apiRestoreProjectVersion(docId, targetId, { title: `恢复 ${targetId}` });
+    const loaded = hydrateProjectForRuntime(data?.project || {});
+    if (loaded?.meta) loaded.meta.id = docId;
+
+    audioEngine.value?.pause?.();
+    midiEngine.value?.pause?.();
+    isPlaying.value = false;
+    notifyPlaybackStop(PLAYBACK_SOURCE_ID);
+    selectedClipIds.value = [];
+    selectedTrackId.value = null;
+    clipClipboard.value = null;
+    undoStack.value = [];
+    redoStack.value = [];
+    changeSeq = 0;
+    lastSavedSeq = 0;
+
+    project.value = loaded?.meta ? loaded : createMockProject(docId);
+    resolvedProjectDocId.value = docId;
+    audioEngine.value?.applyTrackMix?.(project.value);
+    audioEngine.value?.applyClipMix?.(project.value);
+    midiEngine.value?.applyTrackMix?.(project.value);
+
+    await loadVersions();
+    showSaveToast('已回滚到该版本');
+  } catch (e) {
+    showSaveToast(e?.message || '回滚失败', 'error');
+  } finally {
+    isRestoring.value = false;
+    isRestoringVersion.value = false;
+  }
+};
+
 let autosaveTimer = null;
 let changeSeq = 0;
 let lastSavedSeq = 0;
@@ -454,6 +888,7 @@ const scheduleAutoSave = () => {
     const payload = serializeProjectForStorage(project.value);
     try {
       saveProjectDraft(currentId, payload);
+      saveLastStudioSnapshot(currentId, payload);
     } catch {
       // ignore local persistence failures
     }
@@ -474,9 +909,7 @@ const scheduleAutoSave = () => {
         const newId = String(created?.id || created?._id || '').trim();
         if (newId && isMongoObjectId(newId)) {
           resolvedProjectDocId.value = newId;
-          project.value.meta.id = newId;
-          skipNextLoadId = newId;
-          router.replace({ name: 'Studio', params: { projectId: newId } }).catch(() => {});
+          setDraftMapId(currentId, newId);
         }
       }
       lastSavedSeq = changeSeq;
@@ -488,7 +921,12 @@ const scheduleAutoSave = () => {
 };
 
 const loadProjectById = async (id) => {
+  isLoadingProject.value = true;
   const pid = String(id || '').trim();
+  if (pid && !isMongoObjectId(pid)) {
+    const mapped = getDraftMapId(pid);
+    if (mapped) resolvedProjectDocId.value = mapped;
+  }
 
   audioEngine.value?.pause?.();
   midiEngine.value?.pause?.();
@@ -502,39 +940,64 @@ const loadProjectById = async (id) => {
   changeSeq = 0;
   lastSavedSeq = 0;
 
-  // 1) Prefer server (only works for owner).
-  if (hasToken() && isMongoObjectId(pid)) {
-    try {
-      const data = await apiGetProjectSource(pid);
-      const loaded = hydrateProjectForRuntime(data?.project || {});
+  try {
+    // 1) Prefer server (only works for owner).
+    if (hasToken() && isMongoObjectId(pid)) {
+      try {
+        const data = await apiGetProjectSource(pid);
+        const loaded = hydrateProjectForRuntime(data?.project || {});
+        if (loaded?.meta) loaded.meta.id = pid;
+        project.value = loaded?.meta ? loaded : createMockProject(pid);
+        resolvedProjectDocId.value = pid;
+        try {
+          const payload = serializeProjectForStorage(project.value);
+          saveLastStudioSnapshot(pid, payload);
+        } catch {
+          // ignore
+        }
+        finalizeProjectLoad();
+        return;
+      } catch {
+        // fall through to local
+      }
+    }
+
+    // 2) Local draft
+    const local = loadProjectDraft(pid);
+    if (local?.project) {
+      const loaded = hydrateProjectForRuntime(local.project);
       if (loaded?.meta) loaded.meta.id = pid;
       project.value = loaded?.meta ? loaded : createMockProject(pid);
-      resolvedProjectDocId.value = pid;
-      audioEngine.value?.applyTrackMix?.(project.value);
-      audioEngine.value?.applyClipMix?.(project.value);
-      midiEngine.value?.applyTrackMix?.(project.value);
+      resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
+      try {
+        const payload = serializeProjectForStorage(project.value);
+        saveLastStudioSnapshot(pid, payload);
+      } catch {
+        // ignore
+      }
+      finalizeProjectLoad();
       return;
-    } catch {
-      // fall through to local
     }
-  }
 
-  // 2) Local draft
-  const local = loadProjectDraft(pid);
-  if (local?.project) {
-    const loaded = hydrateProjectForRuntime(local.project);
-    if (loaded?.meta) loaded.meta.id = pid;
-    project.value = loaded?.meta ? loaded : createMockProject(pid);
+    // 2.5) Last snapshot fallback (for restart recovery)
+    const snap = loadLastStudioSnapshot(pid);
+    if (snap?.project) {
+      const loaded = hydrateProjectForRuntime(snap.project);
+      if (loaded?.meta) loaded.meta.id = pid || loaded.meta.id;
+      project.value = loaded?.meta ? loaded : createMockProject(pid || loaded?.meta?.id);
+      resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
+      finalizeProjectLoad();
+      return;
+    }
+
+    // 3) Fallback mock
+    project.value = createMockProject(pid);
     resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
-    audioEngine.value?.applyTrackMix?.(project.value);
-    audioEngine.value?.applyClipMix?.(project.value);
-    midiEngine.value?.applyTrackMix?.(project.value);
-    return;
+    finalizeProjectLoad();
+  } finally {
+    if (!isLoadingProject.value) return;
+    isLoadingProject.value = false;
   }
-
-  // 3) Fallback mock
-  project.value = createMockProject(pid);
-  resolvedProjectDocId.value = isMongoObjectId(pid) ? pid : '';
 };
 
 watch(projectId, async (id) => {
@@ -542,8 +1005,26 @@ watch(projectId, async (id) => {
     skipNextLoadId = '';
     return;
   }
+  writeLastStudioProjectId(id);
   await loadProjectById(id);
 }, { immediate: true });
+
+watch(
+  () => resolveRouteProjectId(),
+  (id) => {
+    if (String(id || '').trim()) return;
+    const saved = readLastStudioProjectId();
+    if (!saved) return;
+    router.replace({ name: 'Studio', params: { projectId: saved } }).catch(() => {});
+  },
+  { immediate: true }
+);
+
+watch(
+  () => ({ key: route.query?.importMidiKey, raw: route.query?.importMidi }),
+  () => loadImportMidiFromRoute(),
+  { immediate: true }
+);
 
 const touch = () => {
   project.value.meta.updatedAt = new Date().toISOString();
@@ -620,6 +1101,7 @@ const sanitizeProject = (value) => {
   const timeSignature = transport.timeSignature || {};
   const loopRange = transport.loopRange || {};
   const fork = raw.fork || {};
+  const fx = normalizeFxSettings(raw.fx || raw.meta?.fx || {});
 
   return {
     meta: {
@@ -657,6 +1139,7 @@ const sanitizeProject = (value) => {
       end: Number(r?.end) || 0,
       label: r?.label ? String(r.label) : '',
     })),
+    fx,
     fork: {
       parentProjectId: fork?.parentProjectId ?? null,
       rootProjectId: fork?.rootProjectId ?? null,
@@ -901,23 +1384,46 @@ const addMarker = () => {
 };
 
 const addRegion = () => {
+  isRegionDrawing.value = true;
+  showSaveToast('拖拽鼠标创建区域');
+};
+
+const createRegionFromRange = (range) => {
+  const start = Math.max(0, Number(range?.start) || 0);
+  const end = Math.max(0, Number(range?.end) || 0);
+  if (!(end > start + 0.01)) return;
   pushHistory();
-  const transport = project.value.transport || {};
-  const loop = transport.loopRange || {};
-  let start = Math.max(0, Number(loop.start) || 0);
-  let end = Math.max(0, Number(loop.end) || 0);
-
-  if (!(loop.enabled && end > start + 0.01)) {
-    const t = Math.max(0, Number(transport.playhead) || 0);
-    start = t;
-    end = t + 4;
-  }
-
-  if (!(end > start + 0.01)) end = start + 1;
-
   const list = Array.isArray(project.value.regions) ? project.value.regions : [];
   const region = { id: createId('region'), start, end, label: `R${list.length + 1}` };
   project.value.regions = [...list, region];
+  touch();
+};
+
+const updateRegion = (regionId, patch, options = {}) => {
+  const list = Array.isArray(project.value.regions) ? project.value.regions : [];
+  const idx = list.findIndex((r) => String(r?.id) === String(regionId));
+  if (idx === -1) return;
+  const commit = options?.commit !== false;
+  if (commit) pushHistory();
+
+  const cur = list[idx] || {};
+  const next = { ...cur };
+  if (patch?.start != null) next.start = Math.max(0, Number(patch.start) || 0);
+  if (patch?.end != null) next.end = Math.max(0, Number(patch.end) || 0);
+  if (next.end <= next.start + 0.01) next.end = next.start + 0.1;
+  if (patch?.label != null) next.label = String(patch.label || '');
+
+  list[idx] = next;
+  project.value.regions = [...list];
+  touch();
+};
+
+const deleteRegion = (regionId) => {
+  const list = Array.isArray(project.value.regions) ? project.value.regions : [];
+  const next = list.filter((r) => String(r?.id) !== String(regionId));
+  if (next.length === list.length) return;
+  pushHistory();
+  project.value.regions = next;
   touch();
 };
 
@@ -1383,6 +1889,29 @@ const createId = (prefix) =>
 
 const localAudioFilesByAssetId = new Map();
 
+const getCachedAudioFile = async (assetId, hashKey) => {
+  const id = String(assetId || '').trim();
+  const hash = String(hashKey || '').trim();
+  if (!id && !hash) return null;
+  const existing = localAudioFilesByAssetId.get(id) || null;
+  if (existing) return existing;
+  try {
+    let cached = id ? await loadAudioFile(id) : null;
+    if (!cached?.blob && hash) {
+      cached = await loadAudioFile(`hash:${hash}`);
+    }
+    if (!cached?.blob) return null;
+    const file = new File([cached.blob], cached.name || 'audio', {
+      type: cached.type || 'audio/wav',
+      lastModified: Number(cached.lastModified || Date.now()),
+    });
+    localAudioFilesByAssetId.set(id, file);
+    return file;
+  } catch {
+    return null;
+  }
+};
+
 const importAudio = async (file) => {
   if (!file) return;
   if (!isAllowedAudioFile(file)) {
@@ -1406,6 +1935,19 @@ const importAudio = async (file) => {
     const assetId = createId('asset_audio');
     const clipId = createId('clip_audio');
     localAudioFilesByAssetId.set(assetId, file);
+    const hashKey = `local:${file.name}:${file.size}:${file.lastModified}`;
+    saveAudioFile(assetId, file).catch(async () => {
+      const estimate = await getStorageEstimate();
+      if (estimate?.quota) {
+        const usedMb = Math.round((estimate.usage || 0) / 1024 / 1024);
+        const quotaMb = Math.round(estimate.quota / 1024 / 1024);
+        showSaveToast(`音频缓存失败：存储空间不足（${usedMb}MB/${quotaMb}MB）`, 'error');
+      } else {
+        showSaveToast('音频缓存失败：浏览器未允许持久化存储', 'error');
+      }
+    });
+    saveAudioFile(`hash:${hashKey}`, file).catch(() => {});
+    missingAudioAssets.value = missingAudioAssets.value.filter((m) => String(m?.id || '') !== String(assetId));
 
     const asset = {
       id: assetId,
@@ -1414,7 +1956,9 @@ const importAudio = async (file) => {
       duration: Number(audioBuffer.duration || 0),
       sampleRate: Number(audioBuffer.sampleRate || 0),
       channels: Number(audioBuffer.numberOfChannels || 1),
-      hash: `local:${file.name}:${file.size}:${file.lastModified}`,
+      hash: hashKey,
+      _file: file,
+      audioBuffer,
       peaks: {
         kind: 'pending',
       },
@@ -1461,6 +2005,53 @@ const importAudio = async (file) => {
   } finally {
     isImportingAudio.value = false;
   }
+};
+
+const rehydrateLocalAudioAssets = async () => {
+  const assets = Array.isArray(project.value?.assets) ? project.value.assets : [];
+  const engine = audioEngine.value;
+  const missing = [];
+  for (const asset of assets) {
+    if (String(asset?.type || '') !== 'audio') continue;
+    const id = String(asset?.id || '');
+    if (!id) continue;
+    const file = await getCachedAudioFile(id, asset?.hash);
+    if (!file) {
+      const url = String(asset?.url || '');
+      const hash = String(asset?.hash || '');
+      if (url.startsWith('blob:') || hash.startsWith('local:')) {
+        missing.push({
+          id,
+          name: hash.startsWith('local:') ? hash.split(':')[1] : '',
+        });
+      }
+      continue;
+    }
+    if (!localAudioFilesByAssetId.get(id)) localAudioFilesByAssetId.set(id, file);
+    if (asset?.hash && !String(asset.hash).startsWith('hash:')) {
+      saveAudioFile(id, file).catch(() => {});
+    }
+    asset._file = file;
+    if (!asset.url || String(asset.url).startsWith('blob:')) {
+      try {
+        asset.url = URL.createObjectURL(file);
+      } catch {
+        // ignore
+      }
+    }
+    if (!asset.audioBuffer) {
+      try {
+        const buffer = engine
+          ? await engine.decodeAudioData(await file.arrayBuffer())
+          : await getAudioContext().decodeAudioData((await file.arrayBuffer()).slice(0));
+        asset.audioBuffer = buffer;
+        engine?.loadAsset?.({ ...asset, audioBuffer: buffer, _file: file }).catch(() => {});
+      } catch {
+        // ignore
+      }
+    }
+  }
+  missingAudioAssets.value = missing;
 };
 
 const parseTags = (text) =>
@@ -1541,6 +2132,7 @@ const generatePreviewIfNeeded = async () => {
       sampleRate: 44100,
       filesByAssetId: localAudioFilesByAssetId,
       maxDurationSec: 600,
+      fxQuality: project.value?.fx?.quality || 'low',
     });
     publishAudioFile.value = file;
   } finally {
@@ -1557,6 +2149,7 @@ const generatePreviewNow = async () => {
       sampleRate: 44100,
       filesByAssetId: localAudioFilesByAssetId,
       maxDurationSec: 600,
+      fxQuality: project.value?.fx?.quality || 'low',
     });
     publishAudioFile.value = file;
   } catch (e) {
@@ -1618,6 +2211,11 @@ const publishNow = async () => {
 onMounted(() => {
   const engine = new AudioEngine({
     context: getSharedAudioContext(),
+    fileProvider: (assetId) => {
+      const id = String(assetId || '').trim();
+      const asset = project.value?.assets?.find((a) => String(a?.id || '') === id) || null;
+      return getCachedAudioFile(id, asset?.hash);
+    },
     onTick: (t) => {
       // Avoid touching meta on every animation frame.
       project.value.transport.playhead = t;
@@ -1628,7 +2226,7 @@ onMounted(() => {
     },
   });
   audioEngine.value = engine;
-  midiEngine.value = new MidiEngine({ context: engine.context });
+  midiEngine.value = new MidiEngine({ context: engine.context, outputNode: engine.masterInput });
   audioEngine.value?.applyTrackMix?.(project.value);
   audioEngine.value?.applyClipMix?.(project.value);
   midiEngine.value?.applyTrackMix?.(project.value);
@@ -1730,7 +2328,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="h-screen flex flex-col overflow-hidden">
+  <div class="h-screen flex flex-col overflow-hidden studio-shell">
     <div
       v-if="saveToast"
       class="fixed top-20 sm:top-24 right-3 sm:right-6 z-[120] glass-card px-4 py-2 rounded-xl border border-white/70 text-sm font-semibold text-slate-800 shadow-lg"
@@ -1750,6 +2348,45 @@ onBeforeUnmount(() => {
         <i v-if="clipboardToastTone === 'ok'" class="ph-bold ph-check-circle text-emerald-600"></i>
         <i v-else class="ph-bold ph-warning-circle text-rose-600"></i>
         {{ clipboardToast }}
+      </div>
+    </div>
+
+    <div
+      v-if="missingAudioAssets.length"
+      class="fixed top-20 sm:top-24 left-3 sm:left-6 z-[120] glass-card px-4 py-3 rounded-xl border border-amber-200/70 bg-amber-50/80 text-sm text-amber-800 shadow-lg max-w-[360px]"
+    >
+      <div class="flex items-start gap-2">
+        <i class="ph-bold ph-warning-circle text-amber-500 mt-0.5"></i>
+        <div class="space-y-1">
+          <div class="font-semibold">检测到本地音频缺失</div>
+          <div class="text-xs text-amber-700">
+            这些音频是本地导入的，重启后需要重新导入同名文件：
+            <span v-for="(item, idx) in missingAudioAssets" :key="item.id">
+              {{ item.name || item.id }}<span v-if="idx < missingAudioAssets.length - 1">、</span>
+            </span>
+          </div>
+          <div class="flex justify-end">
+            <UiButton
+              variant="ghost"
+              class="px-3 py-1.5 rounded-lg text-xs font-semibold"
+              @click="missingAudioAssets = []"
+            >
+              知道了
+            </UiButton>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="isLoadingProject"
+      class="fixed inset-0 z-[110] flex items-center justify-center bg-white/40 backdrop-blur-sm"
+    >
+      <div class="glass-card px-6 py-4 rounded-2xl border border-white/70 shadow-xl text-slate-800">
+        <div class="flex items-center gap-3 text-sm font-semibold">
+          <i class="ph-bold ph-spinner animate-spin"></i>
+          正在加载工程...
+        </div>
       </div>
     </div>
 
@@ -1864,6 +2501,408 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <div v-if="fxOpen" class="fixed inset-0 z-[130] flex items-center justify-center px-4">
+      <div class="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" @click="fxOpen = false"></div>
+      <div class="glass-card w-full max-w-3xl rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden">
+        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between">
+          <div class="text-lg font-extrabold text-slate-900">混音 / 母带 FX</div>
+          <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="fxOpen = false">
+            <i class="ph-bold ph-x"></i>
+          </UiButton>
+        </div>
+
+        <div v-if="project.fx" class="p-5 space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">启用 FX</div>
+              <div class="text-xs text-slate-500 mt-1">关闭时不会构建节点，降低 CPU 占用</div>
+            </div>
+            <label class="inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <input type="checkbox" v-model="project.fx.enabled" @change="commitFxSettings" />
+              {{ project.fx.enabled ? '已开启' : '已关闭' }}
+            </label>
+          </div>
+
+          <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-white/70 bg-white/45 p-4">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">质量档位</div>
+              <div class="text-xs text-slate-500 mt-1">导出时将自动使用高质量</div>
+            </div>
+            <select
+              v-model="project.fx.quality"
+              class="input-glass rounded-lg px-3 py-2 text-sm"
+              :disabled="!project.fx.enabled"
+              @change="commitFxSettings"
+            >
+              <option value="low">低（预听）</option>
+              <option value="mid">中</option>
+              <option value="high">高</option>
+            </select>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-4">
+            <div class="rounded-xl border border-white/70 bg-white/45 p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-900">EQ</div>
+                <label class="text-xs font-semibold text-slate-600">
+                  <input
+                    type="checkbox"
+                    v-model="project.fx.master.eq.enabled"
+                    :disabled="!project.fx.enabled"
+                    @change="commitFxSettings"
+                  />
+                  启用
+                </label>
+              </div>
+              <div class="space-y-2">
+                <div class="text-xs text-slate-500">低频 {{ project.fx.master.eq.low.toFixed(1) }} dB</div>
+                <input
+                  type="range"
+                  min="-18"
+                  max="18"
+                  step="0.5"
+                  v-model.number="project.fx.master.eq.low"
+                  :disabled="!project.fx.enabled || !project.fx.master.eq.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">中频 {{ project.fx.master.eq.mid.toFixed(1) }} dB</div>
+                <input
+                  type="range"
+                  min="-18"
+                  max="18"
+                  step="0.5"
+                  v-model.number="project.fx.master.eq.mid"
+                  :disabled="!project.fx.enabled || !project.fx.master.eq.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">高频 {{ project.fx.master.eq.high.toFixed(1) }} dB</div>
+                <input
+                  type="range"
+                  min="-18"
+                  max="18"
+                  step="0.5"
+                  v-model.number="project.fx.master.eq.high"
+                  :disabled="!project.fx.enabled || !project.fx.master.eq.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-white/70 bg-white/45 p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-900">压缩</div>
+                <label class="text-xs font-semibold text-slate-600">
+                  <input
+                    type="checkbox"
+                    v-model="project.fx.master.compressor.enabled"
+                    :disabled="!project.fx.enabled"
+                    @change="commitFxSettings"
+                  />
+                  启用
+                </label>
+              </div>
+              <div class="space-y-2">
+                <div class="text-xs text-slate-500">阈值 {{ project.fx.master.compressor.threshold.toFixed(0) }} dB</div>
+                <input
+                  type="range"
+                  min="-60"
+                  max="0"
+                  step="1"
+                  v-model.number="project.fx.master.compressor.threshold"
+                  :disabled="!project.fx.enabled || !project.fx.master.compressor.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">比例 {{ project.fx.master.compressor.ratio.toFixed(1) }}:1</div>
+                <input
+                  type="range"
+                  min="1"
+                  max="12"
+                  step="0.1"
+                  v-model.number="project.fx.master.compressor.ratio"
+                  :disabled="!project.fx.enabled || !project.fx.master.compressor.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">起音 {{ project.fx.master.compressor.attack.toFixed(3) }} s</div>
+                <input
+                  type="range"
+                  min="0.001"
+                  max="0.08"
+                  step="0.001"
+                  v-model.number="project.fx.master.compressor.attack"
+                  :disabled="!project.fx.enabled || !project.fx.master.compressor.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">释放 {{ project.fx.master.compressor.release.toFixed(2) }} s</div>
+                <input
+                  type="range"
+                  min="0.05"
+                  max="0.8"
+                  step="0.01"
+                  v-model.number="project.fx.master.compressor.release"
+                  :disabled="!project.fx.enabled || !project.fx.master.compressor.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">补偿 {{ project.fx.master.compressor.makeup.toFixed(1) }} dB</div>
+                <input
+                  type="range"
+                  min="-6"
+                  max="12"
+                  step="0.5"
+                  v-model.number="project.fx.master.compressor.makeup"
+                  :disabled="!project.fx.enabled || !project.fx.master.compressor.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-white/70 bg-white/45 p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-900">延迟</div>
+                <label class="text-xs font-semibold text-slate-600">
+                  <input
+                    type="checkbox"
+                    v-model="project.fx.master.delay.enabled"
+                    :disabled="!project.fx.enabled"
+                    @change="commitFxSettings"
+                  />
+                  启用
+                </label>
+              </div>
+              <div class="space-y-2">
+                <div class="text-xs text-slate-500">时间 {{ project.fx.master.delay.time.toFixed(2) }} s</div>
+                <input
+                  type="range"
+                  min="0.02"
+                  max="1.2"
+                  step="0.01"
+                  v-model.number="project.fx.master.delay.time"
+                  :disabled="!project.fx.enabled || !project.fx.master.delay.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">反馈 {{ Math.round(project.fx.master.delay.feedback * 100) }}%</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="0.92"
+                  step="0.01"
+                  v-model.number="project.fx.master.delay.feedback"
+                  :disabled="!project.fx.enabled || !project.fx.master.delay.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">混合 {{ Math.round(project.fx.master.delay.mix * 100) }}%</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  v-model.number="project.fx.master.delay.mix"
+                  :disabled="!project.fx.enabled || !project.fx.master.delay.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-white/70 bg-white/45 p-4 space-y-3">
+              <div class="flex items-center justify-between">
+                <div class="text-sm font-semibold text-slate-900">混响</div>
+                <label class="text-xs font-semibold text-slate-600">
+                  <input
+                    type="checkbox"
+                    v-model="project.fx.master.reverb.enabled"
+                    :disabled="!project.fx.enabled"
+                    @change="commitFxSettings"
+                  />
+                  启用
+                </label>
+              </div>
+              <div class="space-y-2">
+                <div class="text-xs text-slate-500">混合 {{ Math.round(project.fx.master.reverb.mix * 100) }}%</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  v-model.number="project.fx.master.reverb.mix"
+                  :disabled="!project.fx.enabled || !project.fx.master.reverb.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">时长 {{ project.fx.master.reverb.seconds.toFixed(2) }} s</div>
+                <input
+                  type="range"
+                  min="0.3"
+                  max="6"
+                  step="0.05"
+                  v-model.number="project.fx.master.reverb.seconds"
+                  :disabled="!project.fx.enabled || !project.fx.master.reverb.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">衰减 {{ project.fx.master.reverb.decay.toFixed(2) }}</div>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="6"
+                  step="0.05"
+                  v-model.number="project.fx.master.reverb.decay"
+                  :disabled="!project.fx.enabled || !project.fx.master.reverb.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">预延迟 {{ project.fx.master.reverb.preDelay.toFixed(3) }} s</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="0.15"
+                  step="0.005"
+                  v-model.number="project.fx.master.reverb.preDelay"
+                  :disabled="!project.fx.enabled || !project.fx.master.reverb.enabled"
+                  @input="previewFxSettings"
+                  @change="commitFxSettings"
+                />
+                <div class="text-xs text-slate-500">IR 资源（可选 URL）</div>
+                <input
+                  v-model="project.fx.master.reverb.irUrl"
+                  class="w-full input-glass rounded-lg px-3 py-2 text-xs"
+                  :disabled="!project.fx.enabled || !project.fx.master.reverb.enabled"
+                  placeholder="https://example.com/ir.wav"
+                  @change="commitFxSettings"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2">
+          <UiButton variant="ghost" class="px-4 py-2 rounded-lg text-sm font-semibold" @click="fxOpen = false">关闭</UiButton>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="versionsOpen" class="fixed inset-0 z-[130] flex items-center justify-center px-4">
+      <div class="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" @click="versionsOpen = false"></div>
+      <div class="glass-card w-full max-w-2xl rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden">
+        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between">
+          <div class="text-lg font-extrabold text-slate-900">版本历史</div>
+          <div class="flex items-center gap-2">
+            <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="loadVersions" :disabled="isLoadingVersions">
+              <i v-if="isLoadingVersions" class="ph-bold ph-spinner animate-spin"></i>
+              <i v-else class="ph-bold ph-arrow-clockwise"></i>
+            </UiButton>
+            <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="versionsOpen = false">
+              <i class="ph-bold ph-x"></i>
+            </UiButton>
+          </div>
+        </div>
+
+        <div class="p-5 space-y-4">
+          <div v-if="!isLoggedIn" class="rounded-xl border border-amber-200/70 bg-amber-50/70 p-4">
+            <div class="text-sm font-semibold text-amber-700">未登录</div>
+            <div class="text-xs text-amber-700/90 mt-1">版本管理需要登录并同步到云端草稿。</div>
+            <div class="mt-3">
+              <div
+                class="relative inline-flex"
+                @pointerenter="isVersionLoginTipOpen = true"
+                @pointerleave="isVersionLoginTipOpen = false"
+              >
+                <UiButton
+                  variant="secondary"
+                  class="px-3 py-2 rounded-lg text-xs font-semibold"
+                  @click="goLoginFromVersions"
+                >
+                  去登录
+                </UiButton>
+                <div
+                  v-if="isVersionLoginTipOpen"
+                  class="absolute left-1/2 -translate-x-1/2 top-full mt-2 w-56 glass-card rounded-xl border border-white/70 p-3 text-xs text-slate-700 shadow-xl"
+                >
+                  <div class="font-semibold text-slate-900">登录后可用</div>
+                  <div class="mt-1">保存版本历史、查看记录、回滚工程。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-white/70 bg-white/50 p-4 space-y-3">
+            <div class="text-xs text-slate-500 font-semibold">创建快照（建议填备注便于回溯）</div>
+            <input v-model="versionTitle" class="w-full input-glass rounded-lg px-3 py-2 text-sm" placeholder="版本标题（可选）" />
+            <textarea v-model="versionNote" rows="3" class="w-full input-glass rounded-lg px-3 py-2 text-sm" placeholder="版本说明 / 变更记录"></textarea>
+            <div class="flex justify-end">
+              <UiButton
+                variant="primary"
+                class="px-4 py-2 rounded-lg text-sm font-semibold text-white"
+                :disabled="isCreatingVersion || !isLoggedIn"
+                @click="createVersionSnapshot"
+              >
+                <i v-if="isCreatingVersion" class="ph-bold ph-spinner animate-spin"></i>
+                {{ isCreatingVersion ? '创建中...' : '创建快照' }}
+              </UiButton>
+            </div>
+          </div>
+
+          <div class="space-y-2 max-h-[420px] overflow-auto">
+            <div v-if="isLoadingVersions" class="text-sm text-slate-500">加载中...</div>
+            <div v-else-if="!versions.length" class="rounded-xl border border-white/70 bg-white/45 p-4 text-sm text-slate-500">
+              <div>暂无版本记录</div>
+              <div class="text-xs text-slate-400 mt-1">可以先编辑并创建快照；若未登录请先登录。</div>
+            </div>
+            <div
+              v-for="item in versions"
+              :key="item.versionId"
+              class="rounded-xl border border-white/70 bg-white/45 p-4"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-sm font-bold text-slate-900 truncate">
+                    {{ item.title || '未命名版本' }}
+                  </div>
+                  <div class="text-xs text-slate-500">
+                    {{ formatVersionTime(item.createdAt) }} · {{ versionKindLabel(item.kind) }}
+                    <span v-if="item.restoredFrom"> · 来源 {{ item.restoredFrom }}</span>
+                  </div>
+                  <div v-if="item.note" class="text-xs text-slate-600 mt-1 whitespace-pre-wrap">
+                    {{ item.note }}
+                  </div>
+                  <div class="text-[10px] text-slate-400 font-mono mt-2">#{{ item.versionId }}</div>
+                </div>
+                <div class="flex flex-col items-end gap-2 shrink-0">
+                  <span
+                    v-if="String(item.versionId || '') === String(headVersionId || '')"
+                    class="text-[10px] px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold"
+                  >
+                    当前
+                  </span>
+                  <UiButton
+                    variant="ghost"
+                    class="px-3 py-2 rounded-lg text-xs font-semibold"
+                    :disabled="isRestoringVersion"
+                    @click="restoreVersionSnapshot(item)"
+                  >
+                    回滚
+                  </UiButton>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2">
+          <UiButton variant="ghost" class="px-4 py-2 rounded-lg text-sm font-semibold" @click="versionsOpen = false">关闭</UiButton>
+        </div>
+      </div>
+    </div>
+
     <TransportBar
       :project-id="projectId"
       :title="project.meta.title"
@@ -1874,6 +2913,7 @@ onBeforeUnmount(() => {
       :auto-crossfade="autoCrossfade"
       :can-undo="undoStack.length > 0"
       :can-redo="redoStack.length > 0"
+      :is-region-drawing="isRegionDrawing"
       @toggle-play="togglePlay"
       @undo="undo"
       @redo="redo"
@@ -1885,9 +2925,15 @@ onBeforeUnmount(() => {
       @update:auto-crossfade="updateAutoCrossfade"
       @add-marker="addMarker"
       @add-region="addRegion"
+      @cancel-region-draw="isRegionDrawing = false"
       @import-audio="importAudio"
+      @open-versions="openVersionsPanel"
+      @open-fx="fxOpen = true"
       @publish="openPublish"
       @export="openExport"
+      @new-project="createNewProject"
+      @clear-project="clearProject"
+      @save-draft="saveDraftNow"
     />
 
     <div class="flex-1 flex overflow-hidden">
@@ -1904,7 +2950,15 @@ onBeforeUnmount(() => {
         @delete-clip="deleteClip"
         @normalize-clip="normalizeClip"
       />
-      <div class="flex-1 flex flex-col overflow-hidden">
+      <div class="flex-1 flex flex-col overflow-hidden relative">
+        <div
+          v-if="!isLoadingProject && isProjectEmpty"
+          class="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          <div class="glass-card px-6 py-4 rounded-2xl border border-white/70 text-sm text-slate-600 shadow-lg">
+            当前工程为空，可先导入音频或创建轨道开始编辑。
+          </div>
+        </div>
         <Timeline
           :transport="project.transport"
           :tracks="project.tracks"
@@ -1916,11 +2970,16 @@ onBeforeUnmount(() => {
           :selected-clip-ids="selectedClipIds"
           :px-per-second="pxPerSecond"
           :snap-enabled="snapEnabled"
+          :is-region-drawing="isRegionDrawing"
           @update-zoom="updateZoom"
           @scrub-start="onScrubStart"
           @preview-playhead="previewPlayhead"
           @update-playhead="commitPlayhead"
           @update-clip="updateClip"
+          @update-region="updateRegion"
+          @delete-region="deleteRegion"
+          @create-region="createRegionFromRange"
+          @finish-region-draw="isRegionDrawing = false"
           @select-clip="selectClip"
           @set-selection="setSelection"
         />

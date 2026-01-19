@@ -68,9 +68,9 @@ function setCanvasSize(width, height) {
   ctx.imageSmoothingQuality = 'high';
 
   gradient = ctx.createLinearGradient(0, 0, width, 0);
-  gradient.addColorStop(0, 'rgba(56, 189, 248, 0.95)');  // sky
-  gradient.addColorStop(0.52, 'rgba(99, 102, 241, 0.95)'); // indigo
-  gradient.addColorStop(1, 'rgba(34, 211, 238, 0.95)'); // cyan
+  gradient.addColorStop(0, 'rgba(34, 199, 184, 0.95)');  // teal
+  gradient.addColorStop(0.52, 'rgba(245, 178, 74, 0.95)'); // amber
+  gradient.addColorStop(1, 'rgba(240, 106, 90, 0.95)'); // coral
 }
 
 function buildParticles(textWidth, textHeight, padding) {
@@ -359,7 +359,7 @@ watch(
   </span>
 
   <!-- Fallback: keep it pretty on touch / reduced-motion -->
-  <span v-else class="bg-clip-text text-transparent bg-gradient-to-r from-sky-500 via-indigo-500 to-cyan-500">
+  <span v-else class="bg-clip-text text-transparent bg-gradient-to-r from-teal-500 via-amber-500 to-cyan-500">
     {{ text }}
   </span>
 </template>

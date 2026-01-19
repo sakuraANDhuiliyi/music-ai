@@ -68,6 +68,38 @@ export async function apiForkProject(projectId) {
   return data;
 }
 
+export async function apiGetProjectVersions(projectId, options = {}) {
+  const id = String(projectId || '').trim();
+  if (!id) throw new Error('missing projectId');
+  const limit = Math.max(1, Math.min(50, Number(options?.limit) || 20));
+  const res = await authFetch(`/api/projects/${id}/versions?limit=${limit}`);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.message || '加载版本失败');
+  return data;
+}
+
+export async function apiCreateProjectVersion(projectId, payload) {
+  const id = String(projectId || '').trim();
+  if (!id) throw new Error('missing projectId');
+  const body = JSON.stringify(isObject(payload) ? payload : {});
+  const res = await authFetch(`/api/projects/${id}/versions`, { method: 'POST', body });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.message || '创建版本失败');
+  return data;
+}
+
+export async function apiRestoreProjectVersion(projectId, versionId, payload) {
+  const id = String(projectId || '').trim();
+  const vid = String(versionId || '').trim();
+  if (!id) throw new Error('missing projectId');
+  if (!vid) throw new Error('missing versionId');
+  const body = JSON.stringify(isObject(payload) ? payload : {});
+  const res = await authFetch(`/api/projects/${id}/versions/${vid}/restore`, { method: 'POST', body });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.message || '回滚失败');
+  return data;
+}
+
 export async function apiGetProjectLineage(projectId) {
   const id = String(projectId || '').trim();
   if (!id) throw new Error('missing projectId');
@@ -75,4 +107,15 @@ export async function apiGetProjectLineage(projectId) {
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.message || '加载谱系失败');
   return data;
+}
+
+export async function apiGetDraftProjects(authorId, options = {}) {
+  const author = String(authorId || '').trim();
+  if (!author) throw new Error('missing authorId');
+  const limit = options?.limit ? `&limit=${encodeURIComponent(String(options.limit))}` : '';
+  const page = options?.page ? `&page=${encodeURIComponent(String(options.page))}` : '';
+  const res = await authFetch(`/api/projects/drafts?author=${encodeURIComponent(author)}${limit}${page}`);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.message || '加载草稿失败');
+  return Array.isArray(data) ? data : [];
 }

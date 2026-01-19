@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUser, authFetch } from '../composables/useUser.js';
+import { fetchCached } from '../utils/resourceCache.js';
 import AuroraButton from './AuroraButton.vue';
 import UiButton from './UiButton.vue';
 
@@ -18,6 +19,7 @@ const isFeedOpen = ref(false);
 const isNotesOpen = ref(false);
 const isUserMenuOpen = ref(false);
 const isLoginCardOpen = ref(false);
+const isMobileLoginCardOpen = ref(false);
 
 const unreadTotal = ref(0);
 const unreadFollowedProject = ref(0);
@@ -34,11 +36,12 @@ const unreadNonFeed = computed(() => Math.max(0, (unreadTotal.value || 0) - unre
 
 const feedItems = ref([]);
 const isFeedLoading = ref(false);
-const meStats = ref({ followerCount: 0, followingCount: 0 });
+const meStats = ref({ followerCount: 0, followingCount: 0, postCount: 0 });
 
 let feedCloseTimer = null;
 let notesCloseTimer = null;
 let userMenuCloseTimer = null;
+let loginCardCloseTimer = null;
 let pollTimer = null;
 let backoffMs = 5000;
 let consecutiveFailures = 0;
@@ -50,6 +53,8 @@ const closeAllMenus = () => {
   isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isLoginCardOpen.value = false;
+  isMobileLoginCardOpen.value = false;
+  clearLoginCardCloseTimer();
 };
 
 watch(() => currentRoute.value.fullPath, closeAllMenus);
@@ -109,7 +114,7 @@ const timeAgo = (dateStr) => {
 
 const coverStyle = (cover) => {
   const c = String(cover || '').trim();
-  if (!c) return { background: 'linear-gradient(135deg,rgba(56,189,248,0.28),rgba(99,102,241,0.22))' };
+  if (!c) return { background: 'linear-gradient(135deg,rgba(34,199,184,0.22),rgba(245,178,74,0.24))' };
   if (/^(https?:)?\/\//.test(c) || c.startsWith('/') || c.startsWith('data:')) {
     return { backgroundImage: `url(${c})`, backgroundSize: 'cover', backgroundPosition: 'center' };
   }
@@ -158,16 +163,20 @@ const scheduleNextPoll = async () => {
 
 const fetchMeStats = async () => {
   if (!user.value) {
-    meStats.value = { followerCount: 0, followingCount: 0 };
+    meStats.value = { followerCount: 0, followingCount: 0, postCount: 0 };
     return;
   }
   try {
-    const res = await authFetch(`/api/users/${encodeURIComponent(user.value.uid)}/public`);
-    if (!res.ok) return;
-    const data = await res.json();
+    const url = `/api/users/${encodeURIComponent(user.value.uid)}/public`;
+    const data = await fetchCached(`api:${url}`, async () => {
+      const res = await authFetch(url);
+      if (!res.ok) throw new Error('加载失败');
+      return await res.json();
+    }, { ttlMs: 60_000, staleWhileRevalidate: true });
     meStats.value = {
       followerCount: Number(data?.followerCount ?? 0) || 0,
       followingCount: Number(data?.followingCount ?? 0) || 0,
+      postCount: Number(data?.postCount ?? 0) || 0,
     };
   } catch {
     // ignore
@@ -304,17 +313,50 @@ const openLoginCard = () => {
   isLoginCardOpen.value = !isLoginCardOpen.value;
 };
 
+const toggleMobileLoginCard = () => {
+  if (user.value) return;
+  isLoginCardOpen.value = false;
+  isMobileLoginCardOpen.value = !isMobileLoginCardOpen.value;
+};
+
+const clearLoginCardCloseTimer = () => {
+  if (loginCardCloseTimer) {
+    clearTimeout(loginCardCloseTimer);
+    loginCardCloseTimer = null;
+  }
+};
+
+const openLoginCardHover = () => {
+  if (user.value) return;
+  clearLoginCardCloseTimer();
+  isFeedOpen.value = false;
+  isNotesOpen.value = false;
+  isUserMenuOpen.value = false;
+  isMoreOpen.value = false;
+  isMobileMenuOpen.value = false;
+  isLoginCardOpen.value = true;
+};
+
+const scheduleCloseLoginCard = () => {
+  clearLoginCardCloseTimer();
+  loginCardCloseTimer = window.setTimeout(() => {
+    isLoginCardOpen.value = false;
+    loginCardCloseTimer = null;
+  }, 180);
+};
+
 const desktopLinks = computed(() => [
   { label: '首页', name: 'Home', to: '/' },
+  { label: 'Studio', name: 'Studio', to: '/studio' },
   { label: '社区', name: 'Explore', to: '/explore' },
   { label: '素材库', name: 'Library', to: '/library' },
-  { label: '每日推荐', name: 'DailyRecommendations', to: '/daily' },
 ]);
 
 const moreLinks = computed(() => [
-  { label: '弹奏乐器', name: 'PianoPlay', to: '/piano', icon: 'ph-bold ph-piano-keys' },
-  { label: '音频转谱', name: 'AudioToSheet', to: '/audio-to-sheet', icon: 'ph-bold ph-waveform' },
   { label: 'AI 和弦', name: 'AiChordCreator', to: '/ai-chord', icon: 'ph-bold ph-magic-wand' },
+  { label: '音频转谱', name: 'AudioToSheet', to: '/audio-to-sheet', icon: 'ph-bold ph-waveform' },
+  { label: '弹奏乐器', name: 'PianoPlay', to: '/piano', icon: 'ph-bold ph-piano-keys' },
+  { label: '每日推荐', name: 'DailyRecommendations', to: '/daily', icon: 'ph-bold ph-sparkle' },
 ]);
 
 const isActive = (name) => currentRoute.value.name === name;
@@ -340,6 +382,46 @@ const goToMeSpace = () => {
   router.push({ name: 'UserSpace', params: { id } });
 };
 
+const goToMeFollowTab = (tab) => {
+  if (!ensureLogin()) return;
+  const id = String(user.value?.uid || '').trim();
+  if (!id) return;
+  closeAllMenus();
+  router.push({ name: 'UserSpace', params: { id }, query: { tab } });
+};
+
+const prefetchMeSpace = async () => {
+  try {
+    if (!user.value?.uid) return;
+    const id = String(user.value.uid);
+    const profileUrl = `/api/users/${encodeURIComponent(id)}/public`;
+    await fetchCached(`api:${profileUrl}`, async () => {
+      const res = await authFetch(profileUrl);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return data;
+    }, { ttlMs: 60_000, staleWhileRevalidate: true });
+
+    const projectsUrl = `/api/projects?author=${encodeURIComponent(id)}&limit=24`;
+    await fetchCached(`api:${projectsUrl}`, async () => {
+      const res = await authFetch(projectsUrl);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return Array.isArray(data) ? data : [];
+    }, { ttlMs: 40_000, staleWhileRevalidate: true });
+
+    const postsUrl = `/api/users/${encodeURIComponent(id)}/posts?limit=20`;
+    await fetchCached(`api:${postsUrl}`, async () => {
+      const res = await authFetch(postsUrl);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return Array.isArray(data) ? data : [];
+    }, { ttlMs: 30_000, staleWhileRevalidate: true });
+  } catch {
+    // ignore
+  }
+};
+
 onMounted(() => {
   scheduleNextPoll();
   fetchMeStats();
@@ -363,6 +445,7 @@ onUnmounted(() => {
   clearFeedCloseTimer();
   clearNotesCloseTimer();
   clearUserMenuCloseTimer();
+  clearLoginCardCloseTimer();
   if (pollTimer) clearTimeout(pollTimer);
   const root = navRootRef.value;
   const onDocDown = root?.__onDocDown;
@@ -382,13 +465,13 @@ watch(
 </script>
 
 <template>
-  <nav ref="navRootRef" class="fixed top-0 inset-x-0 z-50 glass border-b border-white/70">
+  <nav ref="navRootRef" class="fixed top-0 inset-x-0 z-50 glass border-b border-white/60 shadow-[0_18px_45px_-35px_rgba(17,20,24,0.22)]">
     <div class="mx-auto max-w-7xl h-16 px-4 sm:px-6 flex items-center gap-3">
       <button class="flex items-center gap-2 shrink-0" @click="router.push('/')" aria-label="MuseAI 首页">
-        <div class="w-9 h-9 bg-gradient-to-tr from-sky-400 to-indigo-500 rounded-xl flex items-center justify-center shadow-[0_18px_45px_-28px_rgba(2,132,199,0.8)]">
+        <div class="w-9 h-9 bg-gradient-to-tr from-teal-400 to-amber-400 rounded-xl flex items-center justify-center shadow-[0_18px_45px_-28px_rgba(17,20,24,0.35)]">
           <i class="ph-fill ph-music-notes text-white text-xl"></i>
         </div>
-        <span class="hidden sm:inline text-xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 via-slate-800 to-sky-700 tracking-tight">
+        <span class="hidden sm:inline text-xl font-extrabold font-display bg-clip-text text-transparent bg-gradient-to-r from-slate-900 via-slate-800 to-teal-700 tracking-tight">
           MuseAI
         </span>
       </button>
@@ -400,7 +483,7 @@ watch(
           :key="item.name"
           :to="item.to"
           class="px-3 py-2 rounded-full text-sm font-semibold transition border border-transparent"
-          :class="isActive(item.name) ? 'bg-white/70 text-slate-900 border-white/70 shadow-[0_14px_35px_-30px_rgba(2,132,199,0.25)]' : 'text-slate-600 hover:text-slate-900 hover:bg-white/55'"
+          :class="isActive(item.name) ? 'bg-white/70 text-slate-900 border-white/70 shadow-[0_14px_35px_-30px_rgba(34,199,184,0.25)]' : 'text-slate-600 hover:text-slate-900 hover:bg-white/55'"
         >
           {{ item.label }}
         </router-link>
@@ -414,7 +497,7 @@ watch(
             :aria-expanded="isMoreOpen ? 'true' : 'false'"
             @click="isMoreOpen = !isMoreOpen"
           >
-            更多 <i class="ph-bold ph-caret-down text-sm"></i>
+            AI工具 <i class="ph-bold ph-caret-down text-sm"></i>
           </button>
 
           <div v-if="isMoreOpen" class="absolute left-0 mt-2 w-56 glass-card rounded-2xl border border-white/70 overflow-hidden shadow-xl" role="menu">
@@ -497,10 +580,10 @@ watch(
             >
               <div class="px-4 py-3 border-b border-slate-200/70 bg-white/35 flex items-center justify-between">
                 <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                  <i class="ph-bold ph-envelope-simple text-sky-700"></i>
+                  <i class="ph-bold ph-envelope-simple text-teal-700"></i>
                   消息
                 </div>
-                <button class="text-xs font-semibold text-slate-600 hover:text-sky-700 transition" type="button" @click="goToNotifications">
+                <button class="text-xs font-semibold text-slate-600 hover:text-teal-700 transition" type="button" @click="goToNotifications">
                   查看全部
                 </button>
               </div>
@@ -564,10 +647,10 @@ watch(
             >
               <div class="px-4 py-3 border-b border-slate-200/70 bg-white/35 flex items-center justify-between">
                 <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                  <i class="ph-bold ph-broadcast text-sky-700"></i>
+                  <i class="ph-bold ph-broadcast text-teal-700"></i>
                   动态
                 </div>
-                <button class="text-xs font-semibold text-slate-600 hover:text-sky-700 transition" type="button" @click="goToFeed">
+                <button class="text-xs font-semibold text-slate-600 hover:text-teal-700 transition" type="button" @click="goToFeed">
                   历史动态
                 </button>
               </div>
@@ -595,7 +678,7 @@ watch(
                   <img v-if="note.sender?.avatar" :src="note.sender.avatar" class="w-9 h-9 rounded-full object-cover border border-white/70 shrink-0" />
                   <div
                     v-else
-                    class="w-9 h-9 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-xs font-extrabold border border-white/70 shrink-0"
+                    class="w-9 h-9 rounded-full bg-gradient-to-tr from-teal-400 to-amber-400 flex items-center justify-center text-white text-xs font-extrabold border border-white/70 shrink-0"
                   >
                     {{ note.sender?.username?.charAt(0)?.toUpperCase() || 'U' }}
                   </div>
@@ -632,31 +715,36 @@ watch(
 
               <div class="px-4 py-3 border-t border-slate-200/70 bg-white/35 flex items-center justify-between">
                 <button class="text-xs font-semibold text-slate-600 hover:text-slate-900 transition" type="button" @click="fetchFeed">刷新</button>
-                <button class="text-xs font-semibold text-sky-700 hover:text-sky-600 transition" type="button" @click="goToFeed">查看全部</button>
+                <button class="text-xs font-semibold text-teal-700 hover:text-teal-600 transition" type="button" @click="goToFeed">查看全部</button>
               </div>
             </div>
           </div>
 
-          <button class="nav-icon" type="button" @click="goToStudio" aria-label="创作中心">
+          <button class="nav-icon" type="button" @click="goToStudio" aria-label="Studio">
             <i class="ph-bold ph-pen-nib text-xl"></i>
-            <span class="text-[11px] font-bold text-slate-600 leading-none">创作中心</span>
+            <span class="text-[11px] font-bold text-slate-600 leading-none">Studio</span>
           </button>
         </div>
 
         <AuroraButton class="hidden sm:inline-flex ml-2 text-white text-sm font-semibold px-4 py-2 rounded-full" @click="goToStudio">
           <span class="inline-flex items-center gap-2">
-            <i class="ph-bold ph-upload-simple text-lg"></i>
-            投稿
+            <i class="ph-bold ph-waveform text-lg"></i>
+            进入 Studio
           </span>
         </AuroraButton>
 
-        <div class="relative ml-1" @pointerenter="user ? openUserMenuPanel() : null" @pointerleave="user ? scheduleCloseUserMenuPanel() : null">
+        <div
+          class="relative ml-1"
+          @pointerenter="user ? openUserMenuPanel() : openLoginCardHover()"
+          @pointerleave="user ? scheduleCloseUserMenuPanel() : scheduleCloseLoginCard()"
+        >
           <button
             v-if="user"
             type="button"
-            class="w-10 h-10 rounded-full bg-white/65 border border-white/70 backdrop-blur-xl flex items-center justify-center text-sky-700 hover:border-sky-200 transition overflow-hidden shadow-[0_18px_45px_-40px_rgba(2,132,199,0.8)]"
+            class="w-10 h-10 rounded-full bg-white/65 border border-white/70 backdrop-blur-xl flex items-center justify-center text-teal-700 hover:border-teal-200 transition overflow-hidden shadow-[0_18px_45px_-40px_rgba(17,20,24,0.35)]"
             aria-label="个人中心"
             @click="goToMeSpace"
+            @mouseenter="prefetchMeSpace"
           >
             <img v-if="user.avatar" :src="user.avatar" class="w-full h-full object-cover" />
             <i v-else class="ph ph-user text-lg"></i>
@@ -677,7 +765,7 @@ watch(
               <div class="flex items-center gap-3">
                 <div class="w-14 h-14 rounded-full bg-white/65 border border-white/70 overflow-hidden shrink-0">
                   <img v-if="user.avatar" :src="user.avatar" class="w-full h-full object-cover" />
-                  <div v-else class="w-full h-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-xl font-extrabold">
+                  <div v-else class="w-full h-full bg-gradient-to-tr from-teal-400 to-amber-400 flex items-center justify-center text-white text-xl font-extrabold">
                     {{ user.username?.charAt(0)?.toUpperCase() || 'U' }}
                   </div>
                 </div>
@@ -688,16 +776,16 @@ watch(
               </div>
 
               <div class="mt-4 grid grid-cols-3 gap-2">
-                <div class="stat">
+                <button type="button" class="stat stat-btn" @click="goToMeFollowTab('following')">
                   <div class="stat-num">{{ meStats.followingCount }}</div>
                   <div class="stat-label">关注</div>
-                </div>
-                <div class="stat">
+                </button>
+                <button type="button" class="stat stat-btn" @click="goToMeFollowTab('followers')">
                   <div class="stat-num">{{ meStats.followerCount }}</div>
                   <div class="stat-label">粉丝</div>
-                </div>
+                </button>
                 <button type="button" class="stat stat-btn" @click="goToFeed">
-                  <div class="stat-num">{{ unreadFollowedFeed }}</div>
+                  <div class="stat-num">{{ meStats.postCount }}</div>
                   <div class="stat-label">动态</div>
                 </button>
               </div>
@@ -708,7 +796,7 @@ watch(
                 <i class="ph-bold ph-user-circle"></i><span class="flex-1">个人中心</span><i class="ph-bold ph-caret-right"></i>
               </button>
               <button type="button" class="menu-row" @click="goToStudio">
-                <i class="ph-bold ph-upload-simple"></i><span class="flex-1">投稿管理</span><i class="ph-bold ph-caret-right"></i>
+                <i class="ph-bold ph-upload-simple"></i><span class="flex-1">Studio 管理</span><i class="ph-bold ph-caret-right"></i>
               </button>
               <button type="button" class="menu-row" @click="goToNotifications">
                 <i class="ph-bold ph-envelope-simple"></i><span class="flex-1">消息</span>
@@ -728,6 +816,8 @@ watch(
           <div
             v-if="!user && isLoginCardOpen"
             class="absolute right-0 mt-2 w-[min(360px,calc(100vw-2rem))] glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl"
+            @pointerenter="clearLoginCardCloseTimer"
+            @pointerleave="scheduleCloseLoginCard"
           >
             <div class="p-5">
               <div class="text-base font-extrabold text-slate-900">登录后你可以：</div>
@@ -742,7 +832,7 @@ watch(
                 立即登录
               </UiButton>
               <div class="mt-3 text-center text-xs text-slate-600 font-semibold">
-                首次使用？<button class="text-sky-700 hover:text-sky-600 transition" type="button" @click="router.push('/register')">点击注册</button>
+                首次使用？<button class="text-teal-700 hover:text-teal-600 transition" type="button" @click="router.push('/register')">点击注册</button>
               </div>
             </div>
           </div>
@@ -752,14 +842,14 @@ watch(
 
     <!-- Mobile sheet -->
     <div v-if="isMobileMenuOpen" class="lg:hidden border-t border-white/60">
-      <div class="mx-auto max-w-7xl px-4 sm:px-6 py-4 space-y-3">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 py-4 space-y-3" @click="isMobileLoginCardOpen = false">
         <div class="grid grid-cols-2 gap-2">
           <button
             v-for="item in desktopLinks"
             :key="item.name"
             type="button"
             class="px-4 py-3 rounded-2xl bg-white/50 border border-white/70 text-sm font-semibold text-slate-700 hover:bg-white/65 transition"
-            :class="isActive(item.name) ? 'ring-4 ring-sky-300/25 text-slate-900' : ''"
+            :class="isActive(item.name) ? 'ring-4 ring-teal-300/25 text-slate-900' : ''"
             @click="router.push(item.to)"
           >
             {{ item.label }}
@@ -772,7 +862,7 @@ watch(
             :key="item.name"
             type="button"
             class="px-4 py-3 rounded-2xl bg-white/45 border border-white/70 text-sm font-semibold text-slate-700 hover:bg-white/65 transition flex items-center gap-2"
-            :class="isActive(item.name) ? 'ring-4 ring-sky-300/25 text-slate-900' : ''"
+            :class="isActive(item.name) ? 'ring-4 ring-teal-300/25 text-slate-900' : ''"
             @click="router.push(item.to)"
           >
             <i :class="item.icon" class="text-slate-500"></i>
@@ -793,7 +883,7 @@ watch(
           </button>
           <button type="button" class="mobile-icon" @click="goToStudio">
             <i class="ph-bold ph-upload-simple text-xl"></i>
-            <span>投稿</span>
+            <span>Studio</span>
           </button>
         </div>
 
@@ -806,8 +896,27 @@ watch(
             <UiButton @click="logout" variant="ghost" class="px-3 py-2 rounded-lg text-sm font-semibold">退出</UiButton>
           </div>
           <div v-else class="flex items-center gap-2 ml-auto">
-            <UiButton @click="router.push('/login')" variant="ghost" class="px-3 py-2 rounded-lg text-sm font-semibold">登录</UiButton>
+            <UiButton @click.stop="toggleMobileLoginCard" variant="ghost" class="px-3 py-2 rounded-lg text-sm font-semibold">登录</UiButton>
             <AuroraButton @click="router.push('/register')" class="text-white text-sm font-semibold px-4 py-2 rounded-full">注册</AuroraButton>
+          </div>
+        </div>
+
+        <div v-if="!user && isMobileLoginCardOpen" class="mt-3 glass-card rounded-2xl border border-white/70 overflow-hidden shadow-2xl" @click.stop>
+          <div class="p-5">
+            <div class="text-base font-extrabold text-slate-900">登录后你可以：</div>
+            <div class="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-700 font-semibold">
+              <div class="perk"><i class="ph-bold ph-cloud-arrow-up"></i> 云端保存工程</div>
+              <div class="perk"><i class="ph-bold ph-git-fork"></i> Fork 社区作品</div>
+              <div class="perk"><i class="ph-bold ph-broadcast"></i> 关注动态提醒</div>
+              <div class="perk"><i class="ph-bold ph-chat-circle-text"></i> 私聊与互动</div>
+            </div>
+
+            <UiButton variant="primary" class="mt-5 w-full px-5 py-3 rounded-xl text-white text-sm font-semibold" @click="router.push('/login')">
+              立即登录
+            </UiButton>
+            <div class="mt-3 text-center text-xs text-slate-600 font-semibold">
+              首次使用？<button class="text-teal-700 hover:text-teal-600 transition" type="button" @click="router.push('/register')">点击注册</button>
+            </div>
           </div>
         </div>
       </div>

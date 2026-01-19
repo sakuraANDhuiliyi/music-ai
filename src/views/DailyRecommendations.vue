@@ -120,7 +120,7 @@ onMounted(() => {
 
       <div v-if="!user && isAuthReady" class="glass-card rounded-2xl border border-white/70 p-8">
         <div class="flex items-start gap-4">
-          <div class="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-600">
+          <div class="w-12 h-12 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-600">
             <i class="ph-bold ph-sparkle text-2xl"></i>
           </div>
           <div>
@@ -182,7 +182,7 @@ onMounted(() => {
                   <span
                     v-for="tag in (entry.item.styleTags || []).slice(0, 3)"
                     :key="`style-${tag}`"
-                    class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/10 border border-sky-500/20 text-sky-700"
+                    class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-500/10 border border-teal-500/20 text-teal-700"
                   >
                     {{ tag }}
                   </span>

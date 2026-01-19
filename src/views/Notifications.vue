@@ -2,6 +2,8 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUser, authFetch } from '../composables/useUser.js';
+import { fetchCached } from '../utils/resourceCache.js';
+import { notifyError } from '../utils/requestFeedback.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
@@ -92,7 +94,7 @@ const fetchNotifications = async () => {
       notifications.value = hydrateNotifications(await res.json());
     }
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '加载失败');
   } finally {
     isNotesLoading.value = false;
   }
@@ -190,6 +192,51 @@ const goToTarget = (note) => {
   if (projectId) return router.push({ name: 'ProjectDetail', params: { id: projectId }, query });
 };
 
+const prefetchNote = async (note) => {
+  try {
+    const postId = note?.post?.id || note?.post?._id || note?.post;
+    if (postId) {
+      const base = `/api/posts/${encodeURIComponent(postId)}`;
+      await fetchCached(`api:${base}`, async () => {
+        const res = await authFetch(base);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return data;
+      }, { ttlMs: 30_000, staleWhileRevalidate: true });
+
+      const commentsUrl = `${base}/comments?limit=50`;
+      await fetchCached(`api:${commentsUrl}`, async () => {
+        const res = await authFetch(commentsUrl);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return Array.isArray(data) ? data : [];
+      }, { ttlMs: 20_000, staleWhileRevalidate: true });
+      return;
+    }
+
+    const projectId = note?.project?.id || note?.project?._id || note?.project;
+    if (projectId) {
+      const base = `/api/projects/${encodeURIComponent(projectId)}`;
+      await fetchCached(`api:${base}`, async () => {
+        const res = await authFetch(base);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return data;
+      }, { ttlMs: 30_000, staleWhileRevalidate: true });
+
+      const commentsUrl = `${base}/comments?limit=50`;
+      await fetchCached(`api:${commentsUrl}`, async () => {
+        const res = await authFetch(commentsUrl);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return Array.isArray(data) ? data : [];
+      }, { ttlMs: 20_000, staleWhileRevalidate: true });
+    }
+  } catch {
+    // ignore prefetch errors
+  }
+};
+
 const deleteNotification = async (note) => {
   if (!ensureAuth()) return;
   deletePending.value = { ...deletePending.value, [note.id]: true };
@@ -197,7 +244,7 @@ const deleteNotification = async (note) => {
     const res = await authFetch(`/api/notifications/${note.id}`, { method: 'DELETE' });
     if (res.ok) notifications.value = notifications.value.filter((n) => n.id !== note.id);
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '删除失败');
   } finally {
     deletePending.value = { ...deletePending.value, [note.id]: false };
   }
@@ -212,7 +259,7 @@ const clearAllNotifications = async () => {
     const res = await authFetch('/api/notifications', { method: 'DELETE' });
     if (res.ok) notifications.value = [];
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '清空失败');
   } finally {
     isClearing.value = false;
   }
@@ -222,6 +269,7 @@ const isReplyable = (note) => ['reply', 'comment_project', 'comment_post', 'ment
 
 const openReply = (note) => {
   if (!canInteract.value) return router.push('/login');
+  prefetchReply(note);
   replyingNoteId.value = note.id;
   replyDraft.value = '';
 };
@@ -258,6 +306,23 @@ const submitReply = async (note) => {
     alert('回复失败，请稍后重试');
   } finally {
     isReplySubmitting.value = false;
+  }
+};
+
+const prefetchReply = async (note) => {
+  try {
+    await prefetchNote(note);
+    const senderId = String(note?.sender?.uid || note?.sender?._id || '').trim();
+    if (!senderId) return;
+    const base = `/api/users/${encodeURIComponent(senderId)}/public`;
+    await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return data;
+    }, { ttlMs: 60_000, staleWhileRevalidate: true });
+  } catch {
+    // ignore
   }
 };
 
@@ -322,7 +387,7 @@ const fetchChats = async () => {
     const res = await authFetch('/api/chats');
     if (res.ok) conversations.value = await res.json();
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '加载失败');
   } finally {
     isChatsLoading.value = false;
   }
@@ -341,15 +406,48 @@ const openConversation = async (conversationId) => {
   messages.value = [];
   isMessagesLoading.value = true;
   try {
-    const res = await authFetch(`/api/chats/${conversationId}/messages`);
-    if (res.ok) messages.value = await res.json();
+    const base = `/api/chats/${conversationId}/messages`;
+    const data = await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      const json = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error('加载失败');
+      return Array.isArray(json) ? json : [];
+    }, { ttlMs: 15_000, staleWhileRevalidate: true });
+    messages.value = Array.isArray(data) ? data : [];
     await authFetch(`/api/chats/${conversationId}/read`, { method: 'PUT', body: JSON.stringify({}) });
     conversations.value = conversations.value.map((c) => (c.id === conversationId ? { ...c, unreadCount: 0 } : c));
     scrollMessagesToBottom();
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '加载失败');
   } finally {
     isMessagesLoading.value = false;
+  }
+};
+
+const prefetchConversation = async (conv) => {
+  try {
+    const id = String(conv?.id || '').trim();
+    if (!id) return;
+    const base = `/api/chats/${id}/messages`;
+    await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      const json = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error('加载失败');
+      return Array.isArray(json) ? json : [];
+    }, { ttlMs: 15_000, staleWhileRevalidate: true });
+
+    const peer = peerOf(conv);
+    const peerId = String(peer?.uid || peer?._id || '').trim();
+    if (!peerId) return;
+    const userBase = `/api/users/${encodeURIComponent(peerId)}/public`;
+    await fetchCached(`api:${userBase}`, async () => {
+      const res = await authFetch(userBase);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return data;
+    }, { ttlMs: 60_000, staleWhileRevalidate: true });
+  } catch {
+    // ignore
   }
 };
 
@@ -365,7 +463,7 @@ const openChatWithPeer = async (peerId) => {
     }
     await openConversation(conversation.id);
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '打开会话失败');
   }
 };
 
@@ -392,7 +490,7 @@ const sendMessage = async () => {
 
     scrollMessagesToBottom();
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '发送失败');
   } finally {
     isSendingMessage.value = false;
   }
@@ -420,7 +518,7 @@ const fetchSettings = async () => {
     const res = await authFetch('/api/message-settings');
     if (res.ok) settings.value = await res.json();
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '加载失败');
   } finally {
     isSettingsLoading.value = false;
   }
@@ -438,6 +536,7 @@ const toggleSetting = async (key) => {
     else throw new Error('save failed');
   } catch (e) {
     settings.value = { ...settings.value, [key]: prev };
+    notifyError(e?.message || '保存失败');
   } finally {
     savingKey.value = '';
   }
@@ -459,7 +558,7 @@ const markNotificationsReadForTab = async (tabId) => {
   try {
     await authFetch('/api/notifications/read', { method: 'PUT', body: JSON.stringify({ types }) });
   } catch (e) {
-    console.error(e);
+    notifyError(e?.message || '更新失败');
   }
 };
 
@@ -532,7 +631,7 @@ watch(
               v-for="t in tabs"
               :key="t.id"
               class="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold transition border shrink-0"
-              :class="activeTab === t.id ? 'bg-sky-500/10 text-sky-700 border-sky-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
+              :class="activeTab === t.id ? 'bg-teal-500/10 text-teal-700 border-teal-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
               @click="setTab(t.id)"
             >
               <i :class="t.icon" class="text-lg"></i>
@@ -591,8 +690,9 @@ watch(
                   v-for="conv in conversations"
                   :key="conv.id"
                   class="w-full text-left p-3 rounded-2xl border transition flex gap-3 items-center"
-                  :class="activeConversationId === conv.id ? 'bg-sky-500/10 border-sky-500/20' : 'bg-white/40 border-transparent hover:bg-white/55'"
+                  :class="activeConversationId === conv.id ? 'bg-teal-500/10 border-teal-500/20' : 'bg-white/40 border-transparent hover:bg-white/55'"
                   @click="openConversation(conv.id)"
+                  @mouseenter="prefetchConversation(conv)"
                 >
                   <div class="relative">
                     <UserHoverCard :user="peerOf(conv) || { username: '未知用户' }" class="inline-flex">
@@ -603,7 +703,7 @@ watch(
                       />
                       <div
                         v-else
-                        class="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-xs text-white font-extrabold border border-white/70"
+                        class="w-10 h-10 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-xs text-white font-extrabold border border-white/70"
                       >
                         {{ peerOf(conv)?.username?.charAt(0).toUpperCase() || 'U' }}
                       </div>
@@ -665,7 +765,7 @@ watch(
                       class="max-w-[78%] rounded-2xl px-4 py-2 text-sm leading-relaxed shadow-sm border"
                       :class="
                         String(m.sender?.uid) === String(user.uid)
-                          ? 'bg-gradient-to-r from-sky-500 to-indigo-500 text-white border-white/20'
+                          ? 'bg-gradient-to-r from-teal-500 to-amber-500 text-white border-white/20'
                           : 'bg-white/65 text-slate-800 border-white/70'
                       "
                     >
@@ -735,14 +835,15 @@ watch(
               <div
                 v-for="note in currentNotes"
                 :key="note.id"
-                class="panel p-4 md:p-5 cursor-pointer hover:border-sky-200/60 transition"
+                class="panel p-4 md:p-5 cursor-pointer hover:border-teal-200/60 transition"
                 @click="goToTarget(note)"
+                @mouseenter="prefetchNote(note)"
               >
                 <div class="flex items-start justify-between gap-4">
                   <div class="flex items-start gap-3 min-w-0">
                     <UserHoverCard :user="note.sender || { username: '未知用户' }" class="shrink-0">
                       <img v-if="note.sender?.avatar" :src="note.sender.avatar" class="w-10 h-10 rounded-full object-cover border border-white/70" />
-                      <div v-else class="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-xs text-white font-extrabold border border-white/70">
+                      <div v-else class="w-10 h-10 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-xs text-white font-extrabold border border-white/70">
                         {{ note.sender?.username?.charAt(0).toUpperCase() || 'U' }}
                       </div>
                     </UserHoverCard>
@@ -750,7 +851,7 @@ watch(
                     <div class="min-w-0">
                       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                         <div class="text-sm font-extrabold text-slate-900">{{ note.sender?.username || '未知用户' }}</div>
-                        <div class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-700 border border-sky-500/20">
+                        <div class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-teal-500/10 text-teal-700 border border-teal-500/20">
                           {{ noteTag(note) }}
                         </div>
                         <div class="text-[11px] text-slate-500 font-semibold">{{ formatDate(note.createdAt) }}</div>
@@ -807,7 +908,7 @@ watch(
                         <div class="bg-white/55 border border-white/70 backdrop-blur-xl rounded-2xl p-3">
                           <div class="flex items-center justify-between gap-3 mb-2">
                             <div class="text-xs text-slate-600 font-semibold">
-                              回复 <span class="text-sky-700 font-extrabold">@{{ note.sender.username }}</span>
+                              回复 <span class="text-teal-700 font-extrabold">@{{ note.sender.username }}</span>
                             </div>
                             <UiButton variant="ghost" class="px-2 py-1 rounded-lg text-xs font-semibold" @click.stop="closeReply">
                               取消

@@ -14,10 +14,12 @@ const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
  */
 export default class MidiEngine {
   /**
-   * @param {{ context: AudioContext, masterGain?: number }=} options
+   * @param {{ context: AudioContext, masterGain?: number, outputNode?: AudioNode }=} options
    */
   constructor(options = {}) {
     this._ctx = options.context || null;
+
+    this._outputNode = options.outputNode || null;
 
     this._master = null;
     this._masterGainValue = clamp(Number(options.masterGain ?? 0.22), 0, 1);
@@ -34,6 +36,12 @@ export default class MidiEngine {
   setContext(ctx) {
     this._ctx = ctx;
     // Recreate graph on next play.
+    this._master = null;
+    this._trackNodes.clear();
+  }
+
+  setOutputNode(node) {
+    this._outputNode = node || null;
     this._master = null;
     this._trackNodes.clear();
   }
@@ -55,7 +63,11 @@ export default class MidiEngine {
 
     this._master = ctx.createGain();
     this._master.gain.value = this._masterGainValue;
-    this._master.connect(ctx.destination);
+    if (this._outputNode) {
+      this._master.connect(this._outputNode);
+    } else {
+      this._master.connect(ctx.destination);
+    }
   }
 
   _ensureTrackNodes(trackId, track) {

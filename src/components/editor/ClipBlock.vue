@@ -217,7 +217,7 @@ const drawWaveform = () => {
       return Math.round(rel * (height - 6)) + 3;
     };
 
-    ctx.fillStyle = 'rgba(2,132,199,0.55)';
+    ctx.fillStyle = 'rgba(34,199,184,0.55)';
     for (const n of visible) {
       const s = Number(n?.start) || 0;
       const d = Math.max(0.02, Number(n?.dur) || 0.12);
@@ -281,7 +281,6 @@ const drawWaveform = () => {
   const w = Math.max(0, x1 - x0);
   if (w <= 0) return;
 
-  // TODO: virtual rendering优化：当 clip 很长时，可以只在可视区域按更粗粒度绘制，或按缩放级别动态降采样。
   ctx.clearRect(x0, 0, w, height);
 
   ctx.save();
@@ -290,7 +289,7 @@ const drawWaveform = () => {
   const centerY = Math.floor(height / 2);
   const amp = Math.max(1, Math.floor(height / 2) - 6);
 
-  ctx.strokeStyle = hasPeaks ? 'rgba(2,132,199,0.65)' : 'rgba(148,163,184,0.55)';
+  ctx.strokeStyle = hasPeaks ? 'rgba(34,199,184,0.65)' : 'rgba(148,163,184,0.55)';
   ctx.lineWidth = 1;
   ctx.beginPath();
 
@@ -308,8 +307,10 @@ const drawWaveform = () => {
   const startP = Math.floor((startT / dur) * points);
   const endP = Math.max(startP + 1, Math.ceil((endT / dur) * points));
   const span = Math.max(1, endP - startP);
+  const stride = Math.max(1, Math.floor(span / Math.max(1, width)));
 
-  for (let x = x0; x < x1; x += 1) {
+  const stepPx = Math.max(1, Math.floor(stride));
+  for (let x = x0; x < x1; x += stepPx) {
     const rel = x / Math.max(1, width);
     const idx = clamp(startP + Math.floor(rel * span), 0, points - 1);
     const mn = peaks.min[idx] ?? 0;
@@ -595,14 +596,14 @@ const startInteraction = (mode, event) => {
 
 <template>
   <div
-    class="clip absolute top-3 h-[66px] rounded-2xl border border-white/70 bg-white/55 backdrop-blur-xl shadow-[0_18px_45px_-45px_rgba(2,132,199,0.55)] cursor-grab active:cursor-grabbing select-none group"
+    class="clip absolute top-3 h-[66px] rounded-2xl border border-white/70 bg-white/55 backdrop-blur-xl shadow-[0_18px_45px_-45px_rgba(34,199,184,0.55)] cursor-grab active:cursor-grabbing select-none group"
     :class="[
-      colorClass || 'border-sky-200/60',
+      colorClass || 'border-teal-200/60',
       isInteracting
-        ? 'ring-4 ring-sky-300/30 border-sky-300/70'
+        ? 'ring-4 ring-teal-300/30 border-teal-300/70'
         : selected
           ? 'ring-4 ring-amber-300/25 border-amber-300/70'
-          : 'hover:border-sky-300/70'
+          : 'hover:border-teal-300/70'
     ]"
     :style="style"
     role="button"
@@ -636,7 +637,7 @@ const startInteraction = (mode, event) => {
         </span>
       </div>
       <div class="flex items-center gap-1">
-        <span v-if="interactionMode" class="text-sky-700 font-mono">{{ interactionMode }}</span>
+        <span v-if="interactionMode" class="text-teal-700 font-mono">{{ interactionMode }}</span>
       </div>
     </div>
 
@@ -646,14 +647,14 @@ const startInteraction = (mode, event) => {
       @pointerdown.stop="startInteraction('resize-left', $event)"
       aria-label="Resize left"
     >
-      <div class="h-full w-full rounded-l-2xl bg-sky-500/15 border-r border-white/60"></div>
+      <div class="h-full w-full rounded-l-2xl bg-teal-500/15 border-r border-white/60"></div>
     </div>
     <div
       class="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 transition"
       @pointerdown.stop="startInteraction('resize-right', $event)"
       aria-label="Resize right"
     >
-      <div class="h-full w-full rounded-r-2xl bg-sky-500/15 border-l border-white/60"></div>
+      <div class="h-full w-full rounded-r-2xl bg-teal-500/15 border-l border-white/60"></div>
     </div>
   </div>
 </template>

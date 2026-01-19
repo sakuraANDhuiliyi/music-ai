@@ -13,6 +13,7 @@ const props = defineProps({
   selectedClipIds: { type: Array, default: () => [] },
   pxPerSecond: { type: Number, default: 96 },
   snapEnabled: { type: Boolean, default: true },
+  isRegionDrawing: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -20,6 +21,10 @@ const emit = defineEmits([
   'previewPlayhead',
   'scrubStart',
   'updateClip',
+  'updateRegion',
+  'deleteRegion',
+  'createRegion',
+  'finishRegionDraw',
   'selectClip',
   'setSelection',
   'updateZoom',
@@ -54,6 +59,13 @@ const barSec = computed(() => Math.max(beatSec.value, beatSec.value * Number(ts.
 
 const gridDenom = computed(() => parseGridDenom(props.transport?.grid));
 const gridSec = computed(() => (60 / bpm.value) * (4 / gridDenom.value));
+const snapTime = (timeSec) => {
+  if (!snapEnabled.value) return Number(timeSec) || 0;
+  const step = Number(gridSec.value) || 0;
+  if (!(step > 0)) return Number(timeSec) || 0;
+  return Math.round((Number(timeSec) || 0) / step) * step;
+};
+const pxToTime = (px) => (Number(px) || 0) / Math.max(1, props.pxPerSecond);
 
 const maxEnd = computed(() => {
   const list = Array.isArray(props.clips) ? props.clips : [];
@@ -163,6 +175,13 @@ const onWheel = (e) => {
   if (e.shiftKey) {
     e.preventDefault();
     el.scrollLeft += e.deltaY;
+    return;
+  }
+
+  if (Math.abs(e.deltaX) > 0 || Math.abs(e.deltaY) > 0) {
+    e.preventDefault();
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    el.scrollLeft += delta;
   }
 };
 
@@ -388,8 +407,8 @@ const colorForTrack = (trackId) => {
   const id = String(trackId || '');
   if (id.includes('drum')) return 'border-orange-200/70';
   if (id.includes('vox')) return 'border-fuchsia-200/70';
-  if (id.includes('piano')) return 'border-indigo-200/70';
-  return 'border-sky-200/70';
+  if (id.includes('piano')) return 'border-amber-200/70';
+  return 'border-teal-200/70';
 };
 
 const computeHitClips = (rect) => {
@@ -443,6 +462,43 @@ const onGridPointerDown = (event) => {
   const scrollTop = Number(scroll?.scrollTop) || 0;
   const x0 = event.clientX - rect.left + scrollLeft;
   const y0 = event.clientY - rect.top + scrollTop;
+
+  if (props.isRegionDrawing) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const rect = grid.getBoundingClientRect();
+    const scroll = scrollEl.value;
+    const scrollLeft = Number(scroll?.scrollLeft) || 0;
+    const x0 = event.clientX - rect.left + scrollLeft;
+
+    regionDraft.value = { active: true, x0, x1: x0 };
+
+    const onMove = (e) => {
+      const scrollNow = scrollEl.value;
+      const scrollLeftNow = Number(scrollNow?.scrollLeft) || 0;
+      const x = e.clientX - rect.left + scrollLeftNow;
+      regionDraft.value.x1 = x;
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      const left = Math.min(regionDraft.value.x0, regionDraft.value.x1);
+      const right = Math.max(regionDraft.value.x0, regionDraft.value.x1);
+      regionDraft.value.active = false;
+
+      const start = snapTime(left / Math.max(1, props.pxPerSecond));
+      const end = snapTime(right / Math.max(1, props.pxPerSecond));
+      if (end > start + REGION_MIN) {
+        emit('createRegion', { start, end });
+      }
+      emit('finishRegionDraw');
+    };
+
+    window.addEventListener('pointermove', onMove, { passive: true });
+    window.addEventListener('pointerup', onUp, { once: true });
+    return;
+  }
 
   selection.value = {
     active: true,
@@ -573,6 +629,8 @@ const regionBlocks = computed(() => {
     if (!(end > start)) continue;
     out.push({
       id: String(r?.id || `r_${start}_${end}`),
+      start,
+      end,
       left: Math.round(start * props.pxPerSecond),
       width: Math.round((end - start) * props.pxPerSecond),
       label: String(r?.label || ''),
@@ -580,6 +638,96 @@ const regionBlocks = computed(() => {
   }
   return out;
 });
+
+const REGION_MIN = 0.1;
+const isRegionDragging = ref(false);
+const regionDragId = ref('');
+const regionDragMode = ref('move');
+const regionDragStartX = ref(0);
+const regionDragStart = ref(0);
+const regionDragEnd = ref(0);
+const regionDraft = ref({ active: false, x0: 0, x1: 0 });
+const regionDraftStyle = computed(() => {
+  if (!regionDraft.value.active) return {};
+  const left = Math.min(regionDraft.value.x0, regionDraft.value.x1);
+  const right = Math.max(regionDraft.value.x0, regionDraft.value.x1);
+  return {
+    left: `${left}px`,
+    width: `${Math.max(1, right - left)}px`,
+  };
+});
+
+const startRegionDrag = (event, region, mode = 'move') => {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  isRegionDragging.value = true;
+  regionDragId.value = String(region?.id || '');
+  regionDragMode.value = mode;
+  regionDragStartX.value = Number(event.clientX) || 0;
+  const startScrollLeft = Number(scrollEl.value?.scrollLeft) || 0;
+  regionDragStart.value = Number(region?.start) || 0;
+  regionDragEnd.value = Number(region?.end) || 0;
+
+  const onMove = (e) => {
+    const dx = (Number(e.clientX) || 0) - regionDragStartX.value;
+    if (Math.abs(dx) < 0.5) return;
+    const scrollLeftNow = Number(scrollEl.value?.scrollLeft) || 0;
+    const worldDx = (Number(e.clientX) || 0) + scrollLeftNow - (regionDragStartX.value + startScrollLeft);
+    const baseDelta = pxToTime(worldDx);
+    const speed = e.shiftKey ? 0.1 : 0.2;
+    const deltaSec = baseDelta * speed;
+    const length = Math.max(REGION_MIN, regionDragEnd.value - regionDragStart.value);
+
+    let nextStart = regionDragStart.value;
+    let nextEnd = regionDragEnd.value;
+
+    if (regionDragMode.value === 'move') {
+      nextStart = snapTime(regionDragStart.value + deltaSec);
+      nextStart = Math.max(0, nextStart);
+      nextEnd = nextStart + length;
+    } else if (regionDragMode.value === 'start') {
+      nextStart = snapTime(regionDragStart.value + deltaSec);
+      nextStart = Math.max(0, Math.min(nextStart, regionDragEnd.value - REGION_MIN));
+    } else if (regionDragMode.value === 'end') {
+      nextEnd = snapTime(regionDragEnd.value + deltaSec);
+      nextEnd = Math.max(regionDragStart.value + REGION_MIN, nextEnd);
+    }
+
+    regionDragStart.value = nextStart;
+    regionDragEnd.value = nextEnd;
+    emit('updateRegion', regionDragId.value, { start: nextStart, end: nextEnd }, { commit: false });
+  };
+
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove);
+    isRegionDragging.value = false;
+    emit('updateRegion', regionDragId.value, {
+      start: regionDragStart.value,
+      end: regionDragEnd.value,
+    }, { commit: true });
+  };
+
+  window.addEventListener('pointermove', onMove, { passive: true });
+  window.addEventListener('pointerup', onUp, { once: true });
+};
+
+const renameRegion = (region) => {
+  const id = String(region?.id || '').trim();
+  if (!id) return;
+  const current = String(region?.label || '').trim();
+  const next = window.prompt('区域名称', current);
+  if (next == null) return;
+  emit('updateRegion', id, { label: String(next).trim() }, { commit: true });
+};
+
+const requestDeleteRegion = (region) => {
+  const id = String(region?.id || '').trim();
+  if (!id) return;
+  if (!window.confirm('确定删除该区域吗？')) return;
+  emit('deleteRegion', id);
+};
 
 watch(
   () => playheadX.value,
@@ -631,12 +779,12 @@ onBeforeUnmount(() => {
             <div
               v-for="r in regionBlocks"
               :key="`rr-${r.id}`"
-              class="absolute top-0 bottom-0 bg-violet-400/10 border border-violet-300/25 pointer-events-none"
+              class="absolute top-0 bottom-0 bg-amber-400/10 border border-amber-300/25 pointer-events-none"
               :style="{ left: `${r.left}px`, width: `${r.width}px` }"
             >
               <div
                 v-if="r.label"
-                class="absolute top-0 left-1 mt-0.5 text-[10px] font-mono font-semibold text-violet-900 bg-violet-200/60 border border-violet-300/60 rounded px-1.5 py-0.5"
+                class="absolute top-0 left-1 mt-0.5 text-[10px] font-mono font-semibold text-amber-900 bg-amber-200/60 border border-amber-300/60 rounded px-1.5 py-0.5"
               >
                 {{ r.label }}
               </div>
@@ -687,9 +835,27 @@ onBeforeUnmount(() => {
           <div
             v-for="r in regionBlocks"
             :key="`rg-${r.id}`"
-            class="absolute top-0 bottom-0 bg-violet-400/10 border border-violet-300/20 pointer-events-none z-0"
+            class="absolute top-0 bottom-0 bg-amber-400/10 border border-amber-300/40 z-0 cursor-move"
             :style="{ left: `${r.left}px`, width: `${r.width}px` }"
-          ></div>
+            @pointerdown="startRegionDrag($event, r, 'move')"
+            @dblclick.stop="renameRegion(r)"
+            @contextmenu.prevent.stop="requestDeleteRegion(r)"
+          >
+            <div
+              class="absolute left-0 top-0 bottom-0 w-2 bg-amber-400/35 hover:bg-amber-400/60 cursor-ew-resize"
+              @pointerdown.stop="startRegionDrag($event, r, 'start')"
+            ></div>
+            <div
+              class="absolute right-0 top-0 bottom-0 w-2 bg-amber-400/35 hover:bg-amber-400/60 cursor-ew-resize"
+              @pointerdown.stop="startRegionDrag($event, r, 'end')"
+            ></div>
+            <div
+              v-if="r.label"
+              class="absolute top-1 left-2 text-[10px] font-mono font-semibold text-amber-900 bg-amber-200/70 border border-amber-300/70 rounded px-1.5 py-0.5 select-none"
+            >
+              {{ r.label }}
+            </div>
+          </div>
 
           <!-- grid lines -->
           <div class="absolute inset-0 pointer-events-none">
@@ -717,8 +883,15 @@ onBeforeUnmount(() => {
           <!-- selection rect -->
           <div
             v-if="selection.active && selection.dragging"
-            class="absolute rounded-lg border border-sky-400/60 bg-sky-300/15 pointer-events-none z-50"
+            class="absolute rounded-lg border border-teal-400/60 bg-teal-300/15 pointer-events-none z-50"
             :style="selectionStyle"
+          ></div>
+
+          <!-- region draw preview -->
+          <div
+            v-if="regionDraft.active"
+            class="absolute top-0 bottom-0 bg-amber-400/15 border border-amber-300/60 pointer-events-none z-40"
+            :style="regionDraftStyle"
           ></div>
 
           <!-- Track lanes -->
@@ -762,7 +935,7 @@ onBeforeUnmount(() => {
       class="absolute bottom-4 right-4 glass-card px-3 py-2 rounded-xl border border-white/70 text-xs font-semibold text-slate-700 shadow-lg"
     >
       <div class="flex items-center gap-2">
-        <i class="ph-bold ph-info text-sky-600"></i>
+        <i class="ph-bold ph-info text-teal-600"></i>
         Ctrl/Cmd 滚轮缩放；空格拖拽平移；框选多选（Shift 叠加）；Ctrl/Cmd+Z/Y 撤销/重做；Ctrl/Cmd+C/V/D；S 分割；Alt 临时关闭吸附；Shift+拖拽=Slip
       </div>
     </div>

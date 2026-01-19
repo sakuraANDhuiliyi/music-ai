@@ -13,6 +13,7 @@ const props = defineProps({
   autoCrossfade: { type: Boolean, default: true },
   canUndo: { type: Boolean, default: false },
   canRedo: { type: Boolean, default: false },
+  isRegionDrawing: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -27,9 +28,15 @@ const emit = defineEmits([
   'update:autoCrossfade',
   'addMarker',
   'addRegion',
+  'cancelRegionDraw',
   'importAudio',
   'publish',
   'export',
+  'open-fx',
+  'open-versions',
+  'new-project',
+  'clear-project',
+  'save-draft',
 ]);
 
 const router = useRouter();
@@ -131,7 +138,7 @@ const onPickFile = (e) => {
 </script>
 
 <template>
-  <header class="h-14 border-b border-white/70 glass flex items-center justify-between px-4 shrink-0">
+  <header class="h-16 border-b border-white/70 glass flex items-center justify-between px-4 shrink-0">
     <div class="flex items-center gap-3 min-w-0">
       <UiButton
         variant="ghost"
@@ -154,10 +161,10 @@ const onPickFile = (e) => {
       </div>
     </div>
 
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-2 flex-wrap justify-end">
       <UiButton
         variant="ghost"
-        class="hidden sm:inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm font-semibold"
         :disabled="!canUndo"
         aria-label="撤销"
         @click="emit('undo')"
@@ -166,7 +173,7 @@ const onPickFile = (e) => {
       </UiButton>
       <UiButton
         variant="ghost"
-        class="hidden sm:inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm font-semibold"
         :disabled="!canRedo"
         aria-label="重做"
         @click="emit('redo')"
@@ -175,7 +182,7 @@ const onPickFile = (e) => {
       </UiButton>
 
       <button
-        class="w-10 h-10 bg-white/70 border border-white/70 backdrop-blur-xl rounded-full flex items-center justify-center text-slate-900 transition shadow-[0_18px_45px_-35px_rgba(2,132,199,0.55)] hover:scale-[1.03]"
+        class="w-9 h-9 bg-white/70 border border-white/70 backdrop-blur-xl rounded-full flex items-center justify-center text-slate-900 transition shadow-[0_18px_45px_-35px_rgba(34,199,184,0.55)] hover:scale-[1.03]"
         @click="emit('togglePlay')"
         :aria-label="isPlaying ? '暂停' : '播放'"
       >
@@ -185,7 +192,7 @@ const onPickFile = (e) => {
 
       <UiButton
         variant="ghost"
-        class="hidden sm:inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm font-semibold"
         aria-label="添加标记点"
         @click="emit('addMarker')"
       >
@@ -194,13 +201,26 @@ const onPickFile = (e) => {
       </UiButton>
       <UiButton
         variant="ghost"
-        class="hidden sm:inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm font-semibold"
         aria-label="添加区域"
         @click="emit('addRegion')"
       >
         <i class="ph-bold ph-selection-plus"></i>
         区域
       </UiButton>
+      <div
+        v-if="props.isRegionDrawing"
+        class="hidden sm:inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-100/80 border border-amber-200 text-amber-700"
+      >
+        <i class="ph-bold ph-pencil"></i>
+        绘制中
+        <button
+          class="ml-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-white/70 border border-white/70 text-amber-700"
+          @click="emit('cancelRegionDraw')"
+        >
+          取消
+        </button>
+      </div>
 
       <input
         ref="fileInputRef"
@@ -211,7 +231,7 @@ const onPickFile = (e) => {
       />
       <UiButton
         variant="secondary"
-        class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
         :disabled="isImporting"
         @click="triggerImport"
       >
@@ -221,8 +241,53 @@ const onPickFile = (e) => {
       </UiButton>
 
       <UiButton
+        variant="secondary"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
+        @click="emit('open-versions')"
+      >
+        <i class="ph-bold ph-git-branch"></i>
+        版本
+      </UiButton>
+
+      <UiButton
+        variant="secondary"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
+        @click="emit('save-draft')"
+      >
+        <i class="ph-bold ph-floppy-disk"></i>
+        保存草稿
+      </UiButton>
+
+      <UiButton
+        variant="secondary"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
+        @click="emit('new-project')"
+      >
+        <i class="ph-bold ph-plus"></i>
+        新建
+      </UiButton>
+
+      <UiButton
+        variant="ghost"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-rose-600"
+        @click="emit('clear-project')"
+      >
+        <i class="ph-bold ph-trash"></i>
+        清空
+      </UiButton>
+
+      <UiButton
+        variant="secondary"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
+        @click="emit('open-fx')"
+      >
+        <i class="ph-bold ph-waveform"></i>
+        FX
+      </UiButton>
+
+      <UiButton
         variant="primary"
-        class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold text-white"
         @click="emit('publish')"
       >
         <i class="ph-bold ph-upload"></i>
@@ -231,15 +296,15 @@ const onPickFile = (e) => {
 
       <UiButton
         variant="secondary"
-        class="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+        class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
         @click="emit('export')"
       >
         <i class="ph-bold ph-download-simple"></i>
         导出
       </UiButton>
 
-      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.35)]">
-        <span class="text-slate-600 text-xs font-mono uppercase px-2">BPM</span>
+      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(34,199,184,0.35)]">
+        <span class="text-slate-600 text-xs font-semibold px-2">节拍</span>
         <input
           v-model.number="bpmDraft"
           type="number"
@@ -251,8 +316,8 @@ const onPickFile = (e) => {
         />
       </div>
 
-      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.25)]">
-        <span class="text-slate-600 text-xs font-mono uppercase px-2">TS</span>
+      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(34,199,184,0.25)]">
+        <span class="text-slate-600 text-xs font-semibold px-2">拍号</span>
         <input
           v-model.number="tsNumDraft"
           type="number"
@@ -277,8 +342,8 @@ const onPickFile = (e) => {
         </select>
       </div>
 
-      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.25)]">
-        <span class="text-slate-600 text-xs font-mono uppercase px-2">GRID</span>
+      <div class="hidden sm:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(34,199,184,0.25)]">
+        <span class="text-slate-600 text-xs font-semibold px-2">网格</span>
         <select
           v-model="gridDraft"
           class="bg-transparent text-sm text-slate-900 focus:outline-none pr-2"
@@ -291,22 +356,22 @@ const onPickFile = (e) => {
         </select>
       </div>
 
-      <div class="hidden lg:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.18)]">
+      <div class="hidden lg:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl p-1 rounded-xl shadow-[0_18px_45px_-40px_rgba(34,199,184,0.18)]">
         <button
           class="px-2 py-1 rounded-lg text-xs font-extrabold"
           :class="loopEnabledDraft ? 'text-emerald-800 bg-emerald-500/10 border border-emerald-500/20' : 'text-slate-500'"
           @click="loopEnabledDraft = !loopEnabledDraft; commitLoopRange()"
           :aria-label="loopEnabledDraft ? '关闭循环' : '开启循环'"
         >
-          LOOP
+          循环
         </button>
         <button
           class="px-2 py-1 rounded-lg text-xs font-extrabold"
-          :class="snapEnabled ? 'text-sky-800 bg-sky-500/10 border border-sky-500/20' : 'text-slate-500'"
+          :class="snapEnabled ? 'text-teal-800 bg-teal-500/10 border border-teal-500/20' : 'text-slate-500'"
           @click="emit('update:snapEnabled', !snapEnabled)"
           :aria-label="snapEnabled ? '关闭吸附' : '开启吸附'"
         >
-          SNAP
+          吸附
         </button>
         <button
           class="px-2 py-1 rounded-lg text-xs font-extrabold"
@@ -314,7 +379,7 @@ const onPickFile = (e) => {
           @click="emit('update:autoCrossfade', !autoCrossfade)"
           :aria-label="autoCrossfade ? '关闭自动交叉淡化' : '开启自动交叉淡化'"
         >
-          XF
+          交叉
         </button>
         <input
           v-model.number="loopStartDraft"
@@ -337,9 +402,9 @@ const onPickFile = (e) => {
         />
       </div>
 
-      <div class="hidden md:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl px-3 py-2 rounded-xl shadow-[0_18px_45px_-40px_rgba(2,132,199,0.20)]">
+      <div class="hidden md:flex items-center gap-2 bg-white/55 border border-white/70 backdrop-blur-xl px-3 py-2 rounded-xl shadow-[0_18px_45px_-40px_rgba(34,199,184,0.20)]">
         <i class="ph-bold ph-timer text-slate-500"></i>
-        <span class="font-mono text-sm text-sky-700 font-semibold">{{ timeLabel }}</span>
+        <span class="font-mono text-sm text-teal-700 font-semibold">{{ timeLabel }}</span>
       </div>
     </div>
   </header>

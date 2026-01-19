@@ -88,7 +88,7 @@ watch(
         <div class="flex flex-col md:flex-row md:items-center gap-4 md:gap-6">
           <div class="flex-1">
             <div class="text-lg font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-magnifying-glass text-sky-600"></i>
+              <i class="ph-bold ph-magnifying-glass text-teal-600"></i>
               搜索
               <span v-if="q" class="text-sm font-semibold text-slate-500">（{{ totalCount }} 条结果）</span>
             </div>
@@ -125,21 +125,21 @@ watch(
         <div class="mt-4 flex flex-wrap items-center gap-2">
           <button
             class="px-3 py-2 rounded-xl text-xs font-semibold border transition"
-            :class="filter === 'all' ? 'bg-sky-500/10 text-sky-700 border-sky-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
+            :class="filter === 'all' ? 'bg-teal-500/10 text-teal-700 border-teal-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
             @click="filter = 'all'"
           >
             全部
           </button>
           <button
             class="px-3 py-2 rounded-xl text-xs font-semibold border transition"
-            :class="filter === 'projects' ? 'bg-sky-500/10 text-sky-700 border-sky-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
+            :class="filter === 'projects' ? 'bg-teal-500/10 text-teal-700 border-teal-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
             @click="filter = 'projects'"
           >
             作品（{{ projects.length }}）
           </button>
           <button
             class="px-3 py-2 rounded-xl text-xs font-semibold border transition"
-            :class="filter === 'users' ? 'bg-sky-500/10 text-sky-700 border-sky-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
+            :class="filter === 'users' ? 'bg-teal-500/10 text-teal-700 border-teal-500/20' : 'bg-white/40 text-slate-600 border-transparent hover:bg-white/55 hover:text-slate-900'"
             @click="filter = 'users'"
           >
             用户（{{ users.length }}）
@@ -148,8 +148,8 @@ watch(
       </div>
 
       <div v-if="!q && !isLoading" class="mt-10 text-center text-slate-600">
-        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/60 border border-white/70 shadow-[0_18px_45px_-40px_rgba(2,132,199,0.55)]">
-          <i class="ph-duotone ph-magnifying-glass text-3xl text-sky-700"></i>
+        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-white/60 border border-white/70 shadow-[0_18px_45px_-40px_rgba(34,199,184,0.55)]">
+          <i class="ph-duotone ph-magnifying-glass text-3xl text-teal-700"></i>
         </div>
         <div class="mt-3 font-extrabold text-slate-900">输入关键词开始搜索</div>
         <div class="text-sm text-slate-500 font-semibold mt-1">例如：Pop、电子、Muse、AI</div>
@@ -175,7 +175,7 @@ watch(
           <section v-if="showProjects" class="space-y-4">
             <div class="flex items-center justify-between">
               <div class="text-sm font-extrabold text-slate-800 flex items-center gap-2">
-                <i class="ph-bold ph-music-notes text-sky-600"></i>
+                <i class="ph-bold ph-music-notes text-teal-600"></i>
                 作品
               </div>
               <div class="text-xs text-slate-500 font-semibold" v-if="q">共 {{ projects.length }} 条</div>
@@ -185,7 +185,7 @@ watch(
               <div
                 v-for="p in projects"
                 :key="p.id"
-                class="glass-card rounded-2xl overflow-hidden cursor-pointer border border-white/70 hover:border-sky-200 transition"
+                class="glass-card rounded-2xl overflow-hidden cursor-pointer border border-white/70 hover:border-teal-200 transition"
                 @click="goProject(p)"
               >
                 <div class="h-28" :style="{ background: p.cover || coverFallback() }"></div>
@@ -197,12 +197,12 @@ watch(
                         <img
                           v-if="p.author?.avatar"
                           :src="p.author.avatar"
-                          class="w-7 h-7 rounded-full object-cover border border-white/70 cursor-pointer hover:border-sky-200 transition"
+                          class="w-7 h-7 rounded-full object-cover border border-white/70 cursor-pointer hover:border-teal-200 transition"
                           @click.stop="startChat(p.author)"
                         />
                         <div
                           v-else
-                          class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-[10px] text-white font-bold border border-white/70 cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(2,132,199,0.7)] transition"
+                          class="w-7 h-7 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-[10px] text-white font-bold border border-white/70 cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(34,199,184,0.7)] transition"
                           @click.stop="startChat(p.author)"
                         >
                           {{ p.author?.username?.charAt(0).toUpperCase() || 'U' }}
@@ -246,7 +246,7 @@ watch(
           <section v-if="showUsers" class="space-y-4">
             <div class="flex items-center justify-between">
               <div class="text-sm font-extrabold text-slate-800 flex items-center gap-2">
-                <i class="ph-bold ph-users text-sky-600"></i>
+                <i class="ph-bold ph-users text-teal-600"></i>
                 用户
               </div>
               <div class="text-xs text-slate-500 font-semibold" v-if="q">共 {{ users.length }} 条</div>
@@ -259,12 +259,12 @@ watch(
                     <img
                       v-if="u.avatar"
                       :src="u.avatar"
-                      class="w-12 h-12 rounded-full object-cover border border-white/70 cursor-pointer hover:border-sky-200 transition"
+                      class="w-12 h-12 rounded-full object-cover border border-white/70 cursor-pointer hover:border-teal-200 transition"
                       @click.stop="startChat(u)"
                     />
                     <div
                       v-else
-                      class="w-12 h-12 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-lg font-extrabold border border-white/70 cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(2,132,199,0.7)] transition"
+                      class="w-12 h-12 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-white text-lg font-extrabold border border-white/70 cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(34,199,184,0.7)] transition"
                       @click.stop="startChat(u)"
                     >
                       {{ u.username?.charAt(0).toUpperCase() || 'U' }}

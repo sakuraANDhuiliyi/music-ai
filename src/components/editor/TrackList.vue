@@ -15,7 +15,7 @@ const emit = defineEmits(['updateTrack', 'updateClip', 'deleteClip', 'addTrack',
 const typeLabel = (t) => (t === 'midi' ? 'MIDI' : 'AUDIO');
 const typeIcon = (t) => (t === 'midi' ? 'ph-bold ph-piano-keys' : 'ph-bold ph-waveform');
 
-const trackCountLabel = computed(() => `${props.tracks?.length || 0} tracks`);
+const trackCountLabel = computed(() => `${props.tracks?.length || 0} 条轨道`);
 
 const toggle = (track, key) => emit('updateTrack', track.id, { [key]: !track[key] });
 const setGain = (track, value, commit = false) => emit('updateTrack', track.id, { gain: Number(value) }, { commit });
@@ -111,10 +111,10 @@ const deleteSelectedClip = () => {
 </script>
 
 <template>
-  <aside class="w-72 xl:w-80 glass-card border border-white/70 border-r-white/70 flex flex-col shrink-0 overflow-hidden">
-    <div class="px-4 py-3 border-b border-slate-200/70 bg-white/30 flex items-center justify-between gap-3">
+  <aside class="w-72 xl:w-80 glass-card rounded-3xl border border-white/70 flex flex-col shrink-0 overflow-hidden">
+    <div class="px-4 py-3 border-b border-slate-200/70 bg-white/40 flex items-center justify-between gap-3">
       <div class="min-w-0">
-        <div class="text-sm font-extrabold text-slate-900">Tracks</div>
+        <div class="text-sm font-extrabold text-slate-900 font-display">轨道</div>
         <div class="text-[11px] text-slate-500 font-mono truncate">{{ trackCountLabel }}</div>
       </div>
       <div class="relative">
@@ -134,13 +134,13 @@ const deleteSelectedClip = () => {
             class="w-full px-3 py-2 text-left text-sm font-semibold text-slate-800 hover:bg-white/40 transition"
             @click="addTrack('audio')"
           >
-            + Audio Track
+            + 音频轨道
           </button>
           <button
             class="w-full px-3 py-2 text-left text-sm font-semibold text-slate-800 hover:bg-white/40 transition"
             @click="addTrack('midi')"
           >
-            + MIDI Track
+            + MIDI 轨道
           </button>
         </div>
       </div>
@@ -151,7 +151,7 @@ const deleteSelectedClip = () => {
         v-for="track in tracks"
         :key="track.id"
         class="h-24 border-b border-slate-200/70 px-3 py-3 flex flex-col justify-between hover:bg-white/35 transition cursor-pointer"
-        :class="String(selectedTrackId) === String(track.id) ? 'bg-white/45 ring-4 ring-sky-300/20' : ''"
+        :class="String(selectedTrackId) === String(track.id) ? 'bg-white/45 ring-4 ring-teal-300/20' : ''"
         @click="emit('selectTrack', track.id)"
       >
         <div class="flex items-start justify-between gap-2">
@@ -194,7 +194,7 @@ const deleteSelectedClip = () => {
         <div class="grid grid-cols-2 gap-2 items-end">
           <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
             <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-              <span>GAIN</span>
+              <span>增益</span>
               <span class="font-mono text-slate-700">{{ Number(track.gain || 0).toFixed(1) }} dB</span>
             </div>
             <input
@@ -211,7 +211,7 @@ const deleteSelectedClip = () => {
 
           <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
             <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-              <span>PAN</span>
+              <span>声像</span>
               <span class="font-mono text-slate-700">{{ panLabel(track.pan) }}</span>
             </div>
             <input
@@ -253,7 +253,7 @@ const deleteSelectedClip = () => {
           <div class="grid grid-cols-2 gap-2 items-end mt-2">
             <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
               <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-                <span>GAIN</span>
+                <span>增益</span>
                 <span class="font-mono text-slate-700">{{ Number(selectedClip.gain || 0).toFixed(1) }} dB</span>
               </div>
               <input
@@ -270,7 +270,7 @@ const deleteSelectedClip = () => {
 
             <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
               <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-                <span>PAN</span>
+                <span>声像</span>
                 <span class="font-mono text-slate-700">{{ clipPanLabel(selectedClip.pan) }}</span>
               </div>
               <input
@@ -288,7 +288,7 @@ const deleteSelectedClip = () => {
 
           <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl mt-2">
             <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-              <span>SPEED</span>
+              <span>速度</span>
               <span class="font-mono text-slate-700">{{ Number(selectedClip.playbackRate || 1).toFixed(2) }}x</span>
             </div>
             <input
@@ -306,7 +306,7 @@ const deleteSelectedClip = () => {
           <div class="grid grid-cols-2 gap-2 items-end mt-2">
             <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
               <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-                <span>FADE IN</span>
+                <span>淡入</span>
                 <span class="font-mono text-slate-700">{{ Number(selectedClip.fadeIn || 0).toFixed(2) }}s</span>
               </div>
               <div class="flex items-center gap-2">
@@ -324,15 +324,15 @@ const deleteSelectedClip = () => {
                   class="flex-1 bg-transparent text-sm text-slate-900 focus:outline-none border border-white/60 rounded-lg px-2 py-1"
                   @change="setClipFadeInCurve($event.target.value)"
                 >
-                  <option value="linear">linear</option>
-                  <option value="exp">exp</option>
+                  <option value="linear">线性</option>
+                  <option value="exp">指数</option>
                 </select>
               </div>
             </div>
 
             <div class="bg-white/55 border border-white/70 rounded-xl px-3 py-2 backdrop-blur-xl">
               <div class="text-[10px] font-bold text-slate-500 flex items-center justify-between gap-2">
-                <span>FADE OUT</span>
+                <span>淡出</span>
                 <span class="font-mono text-slate-700">{{ Number(selectedClip.fadeOut || 0).toFixed(2) }}s</span>
               </div>
               <div class="flex items-center gap-2">
@@ -350,8 +350,8 @@ const deleteSelectedClip = () => {
                   class="flex-1 bg-transparent text-sm text-slate-900 focus:outline-none border border-white/60 rounded-lg px-2 py-1"
                   @change="setClipFadeOutCurve($event.target.value)"
                 >
-                  <option value="linear">linear</option>
-                  <option value="exp">exp</option>
+                  <option value="linear">线性</option>
+                  <option value="exp">指数</option>
                 </select>
               </div>
             </div>

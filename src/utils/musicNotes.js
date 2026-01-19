@@ -60,3 +60,4 @@ export function uniquePitchClasses(notes) {
   });
   return Array.from(set).sort((a, b) => a - b);
 }
+

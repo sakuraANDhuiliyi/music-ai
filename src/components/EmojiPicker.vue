@@ -347,7 +347,7 @@ const popoverClass = computed(() => {
       >
       <div class="px-4 py-3 border-b border-slate-200/70 bg-white/35 flex items-center justify-between gap-2">
         <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2 min-w-0">
-          <i :class="currentMeta.icon" class="text-sky-700"></i>
+          <i :class="currentMeta.icon" class="text-teal-700"></i>
           <span class="truncate">{{ currentMeta.label }}</span>
           <span v-if="activeCat === 'custom'" class="text-[11px] font-semibold text-slate-500 truncate">
             {{ customEmojis.length }}/80
@@ -358,7 +358,7 @@ const popoverClass = computed(() => {
           <button
             v-if="activeCat === 'custom'"
             type="button"
-            class="text-xs font-semibold text-sky-700 hover:text-sky-600 transition inline-flex items-center gap-1 disabled:opacity-60"
+            class="text-xs font-semibold text-teal-700 hover:text-teal-600 transition inline-flex items-center gap-1 disabled:opacity-60"
             :disabled="isUploading"
             @click="triggerUpload"
           >

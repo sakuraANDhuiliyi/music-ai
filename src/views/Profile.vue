@@ -3,6 +3,7 @@ import { ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUser, authFetch } from '../composables/useUser.js';
 import UiButton from '../components/UiButton.vue';
+import { notifyError } from '../utils/requestFeedback.js';
 
 const router = useRouter();
 const { user, isAuthReady, updateProfile, isLoading, error, successMessage } = useUser();
@@ -83,8 +84,7 @@ const handleFileChange = async (event) => {
       throw new Error(data.message || '上传失败');
     }
   } catch (e) {
-    console.error(e);
-    alert('头像上传出错: ' + e.message);
+    notifyError(`头像上传出错: ${e?.message || '操作失败'}`);
   } finally {
     isUploading.value = false;
     // 清空 input，否则选同一张图片不会触发 change 事件
@@ -118,7 +118,7 @@ const handleSave = async () => {
         <div class="flex items-center gap-6 mb-8 pb-8 border-b border-slate-200/70">
           <div class="w-20 h-20 rounded-full bg-white/60 border border-white/70 backdrop-blur-xl flex items-center justify-center overflow-hidden shadow-lg relative group">
             <img v-if="form.avatar" :src="form.avatar" class="w-full h-full object-cover" />
-            <div v-else class="w-full h-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-3xl font-extrabold">
+            <div v-else class="w-full h-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-white text-3xl font-extrabold">
               {{ form.username ? form.username.charAt(0).toUpperCase() : 'U' }}
             </div>
             <div v-if="isUploading" class="absolute inset-0 bg-black/50 flex items-center justify-center">
@@ -168,7 +168,7 @@ const handleSave = async () => {
           </div>
 
           <div class="pt-4 flex justify-end border-t border-slate-200/70 mt-8">
-            <UiButton type="submit" :disabled="isLoading" variant="primary" class="px-8 py-3 text-white font-semibold rounded-xl transition flex items-center gap-2 disabled:opacity-50 shadow-lg shadow-sky-500/20">
+            <UiButton type="submit" :disabled="isLoading" variant="primary" class="px-8 py-3 text-white font-semibold rounded-xl transition flex items-center gap-2 disabled:opacity-50 shadow-lg shadow-teal-500/20">
               <i v-if="isLoading" class="ph-bold ph-spinner animate-spin"></i>
               {{ isLoading ? '保存中...' : '保存修改' }}
             </UiButton>

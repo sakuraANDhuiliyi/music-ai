@@ -1156,7 +1156,7 @@ onMounted(() => {
                     <td class="px-6 py-4">
                       <div class="flex items-center gap-3">
                         <button
-                          class="w-8 h-8 rounded-lg bg-white/60 border border-white/70 backdrop-blur-xl flex items-center justify-center text-slate-700 group-hover:text-sky-700 transition shadow-[0_18px_45px_-40px_rgba(2,132,199,0.55)]"
+                          class="w-8 h-8 rounded-lg bg-white/60 border border-white/70 backdrop-blur-xl flex items-center justify-center text-slate-700 group-hover:text-teal-700 transition shadow-[0_18px_45px_-40px_rgba(34,199,184,0.55)]"
                           @click="playOne(block)"
                           aria-label="播放"
                         >

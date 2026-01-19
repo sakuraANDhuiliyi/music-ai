@@ -1,7 +1,8 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUser, authFetch } from '../composables/useUser.js';
+import { fetchCached } from '../utils/resourceCache.js';
 import UiButton from '../components/UiButton.vue';
 import MentionText from '../components/MentionText.vue';
 import UserHoverCard from '../components/UserHoverCard.vue';
@@ -79,6 +80,10 @@ const newCommentContent = ref('');
 const isSubmittingComment = ref(false);
 const replyTarget = ref(null);
 const commentInputRef = ref(null);
+const commentImageInput = ref(null);
+const pickedCommentImages = ref([]); // [{ file, previewUrl }]
+const commentError = ref('');
+const MAX_COMMENT_IMAGES = 6;
 const highlightedCommentId = ref('');
 let highlightTimer = null;
 
@@ -138,7 +143,10 @@ async function fetchLineage() {
   lineageError.value = '';
   if (!projectId.value) return;
   try {
-    const data = await apiGetProjectLineage(projectId.value);
+    const base = `/api/projects/${projectId.value}/lineage`;
+    const data = await fetchCached(`api:${base}`, async () => {
+      return await apiGetProjectLineage(projectId.value);
+    }, { ttlMs: 30_000, staleWhileRevalidate: true });
     lineage.value = {
       parent: data?.parent || null,
       children: Array.isArray(data?.children) ? data.children : [],
@@ -146,6 +154,26 @@ async function fetchLineage() {
     };
   } catch (e) {
     lineageError.value = e?.message || '加载谱系失败';
+  }
+}
+
+async function prefetchRelated() {
+  try {
+    if (!project.value) return;
+    const authorUid = String(project.value?.author?.uid || project.value?.author?._id || '').trim();
+    if (authorUid) {
+      const base = `/api/users/${encodeURIComponent(authorUid)}/public`;
+      await fetchCached(`api:${base}`, async () => {
+        const res = await authFetch(base);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return data;
+      }, { ttlMs: 60_000, staleWhileRevalidate: true });
+    }
+
+    await fetchLineage();
+  } catch {
+    // ignore
   }
 }
 
@@ -198,16 +226,17 @@ async function fetchProject() {
   project.value = null;
 
   try {
-    const res = await authFetch(`/api/projects/${projectId.value}`);
-    if (!res.ok) {
-      projectError.value = res.status === 404 ? '作品不存在或已被屏蔽' : '加载作品失败，请稍后重试';
-      return;
-    }
+    const base = `/api/projects/${projectId.value}`;
+    const data = await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      if (!res.ok) throw new Error(res.status === 404 ? '作品不存在或已被屏蔽' : '加载作品失败，请稍后重试');
+      return await res.json();
+    }, { ttlMs: 30_000, staleWhileRevalidate: true });
 
-    project.value = await res.json();
+    project.value = data;
 
     hydrateProjectMeta();
-    await fetchLineage();
+    prefetchRelated();
     await fetchRelationship();
   } catch (e) {
     projectError.value = '加载作品失败，请稍后重试';
@@ -221,8 +250,13 @@ async function fetchComments() {
 
   isCommentsLoading.value = true;
   try {
-    const res = await authFetch(`/api/projects/${projectId.value}/comments`);
-    const data = res.ok ? await res.json() : [];
+    const base = `/api/projects/${projectId.value}/comments?limit=50`;
+    const data = await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      const json = res.ok ? await res.json() : [];
+      if (!res.ok) throw new Error('加载失败');
+      return Array.isArray(json) ? json : [];
+    }, { ttlMs: 20_000, staleWhileRevalidate: true });
     comments.value = hydrateCommentsMeta(Array.isArray(data) ? data : []);
   } catch (e) {
     comments.value = [];
@@ -297,14 +331,95 @@ function cancelReply() {
   replyTarget.value = null;
 }
 
+const resetCommentImageInput = () => {
+  if (commentImageInput.value) commentImageInput.value.value = '';
+};
+
+const clearPickedCommentImages = () => {
+  for (const it of pickedCommentImages.value || []) {
+    if (it?.previewUrl) {
+      try {
+        URL.revokeObjectURL(it.previewUrl);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  pickedCommentImages.value = [];
+  resetCommentImageInput();
+};
+
+const removePickedCommentImage = (idx) => {
+  const arr = [...(pickedCommentImages.value || [])];
+  const it = arr[idx];
+  if (it?.previewUrl) {
+    try {
+      URL.revokeObjectURL(it.previewUrl);
+    } catch {
+      // ignore
+    }
+  }
+  arr.splice(idx, 1);
+  pickedCommentImages.value = arr;
+};
+
+const triggerPickCommentImages = () => {
+  if (commentImageInput.value) commentImageInput.value.click();
+};
+
+const handlePickCommentImages = (event) => {
+  const files = Array.from(event?.target?.files || []);
+  if (!files.length) return;
+  const remaining = MAX_COMMENT_IMAGES - (pickedCommentImages.value?.length || 0);
+  if (remaining <= 0) {
+    commentError.value = `最多选择 ${MAX_COMMENT_IMAGES} 张图片`;
+    resetCommentImageInput();
+    return;
+  }
+
+  const valid = files.filter((f) => String(f?.type || '').startsWith('image/'));
+  const picked = valid.slice(0, remaining).map((file) => ({
+    file,
+    previewUrl: URL.createObjectURL(file),
+  }));
+
+  pickedCommentImages.value = [...(pickedCommentImages.value || []), ...picked];
+  if (valid.length > remaining) {
+    commentError.value = `最多选择 ${MAX_COMMENT_IMAGES} 张图片`;
+  } else {
+    commentError.value = '';
+  }
+  resetCommentImageInput();
+};
+
 async function submitComment() {
-  if (!newCommentContent.value.trim()) return;
+  const content = newCommentContent.value.trim();
+  const hasImages = Boolean(pickedCommentImages.value?.length);
+  if (!content && !hasImages) return;
   if (!user.value) return router.push('/login');
 
   isSubmittingComment.value = true;
+  commentError.value = '';
   try {
+    let imageUrls = [];
+    if (pickedCommentImages.value?.length) {
+      const fd = new FormData();
+      for (const it of pickedCommentImages.value) {
+        if (it?.file) fd.append('files', it.file);
+      }
+      const up = await authFetch('/api/upload/images', { method: 'POST', body: fd });
+      const upData = up.ok ? await up.json() : null;
+      if (!up.ok) throw new Error(upData?.message || '图片上传失败');
+      imageUrls = Array.isArray(upData?.urls)
+        ? upData.urls
+        : Array.isArray(upData?.files)
+          ? upData.files.map((f) => f?.url).filter(Boolean)
+          : [];
+    }
+
     const payload = {
-      content: newCommentContent.value,
+      content,
+      imageUrls,
       parentId: replyTarget.value ? replyTarget.value.parentId : null,
       replyToUserId: replyTarget.value
         ? comments.value.find((c) => c.id === replyTarget.value.id)?.author.uid
@@ -325,16 +440,55 @@ async function submitComment() {
       isLiked: false,
     });
     newCommentContent.value = '';
+    clearPickedCommentImages();
     replyTarget.value = null;
   } catch (e) {
-    alert('评论失败，请稍后重试');
+    commentError.value = e?.message || '评论失败，请稍后重试';
   } finally {
     isSubmittingComment.value = false;
   }
 }
 
+async function deleteComment(comment) {
+  if (!user.value) return router.push('/login');
+  if (!comment?.id) return;
+  if (!window.confirm('确定删除该评论吗？该评论的回复也会被删除。')) return;
+
+  try {
+    const res = await authFetch(`/api/comments/${comment.id}`, { method: 'DELETE' });
+    const data = res.ok ? await res.json() : null;
+    if (!res.ok) throw new Error(data?.message || '删除失败');
+
+    const deletedIds = Array.isArray(data?.deletedIds) ? data.deletedIds : null;
+    if (deletedIds?.length) {
+      const set = new Set(deletedIds.map((x) => String(x)));
+      comments.value = (comments.value || []).filter((c) => !set.has(String(c.id)));
+    } else {
+      const toRemove = new Set([String(comment.id)]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const c of comments.value || []) {
+          if (c?.parentId && toRemove.has(String(c.parentId)) && !toRemove.has(String(c.id))) {
+            toRemove.add(String(c.id));
+            changed = true;
+          }
+        }
+      }
+      comments.value = (comments.value || []).filter((c) => !toRemove.has(String(c.id)));
+    }
+  } catch (e) {
+    alert(e?.message || '删除失败');
+  }
+}
+
 onMounted(async () => {
   await Promise.all([fetchProject(), fetchComments()]);
+});
+
+onBeforeUnmount(() => {
+  clearPickedCommentImages();
+  if (highlightTimer) window.clearTimeout(highlightTimer);
 });
 
 watch(
@@ -414,7 +568,7 @@ watch(
               <div class="absolute inset-0 bg-gradient-to-b from-white/15 via-transparent to-white/55"></div>
               <div class="absolute bottom-4 left-4 right-4 flex items-end justify-between gap-3">
                 <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full glass text-slate-700 text-xs font-semibold">
-                  <i class="ph-fill ph-sparkle text-sky-600"></i>
+                  <i class="ph-fill ph-sparkle text-teal-600"></i>
                   <span>社区作品</span>
                 </div>
                 <div class="text-[11px] text-white/90 font-semibold drop-shadow">
@@ -434,18 +588,18 @@ watch(
                     v-if="project.author?.avatar"
                     :src="project.author.avatar"
                     @click="startChat(project.author)"
-                    class="w-8 h-8 rounded-full object-cover border border-white/70 cursor-pointer hover:border-sky-200 transition"
+                    class="w-8 h-8 rounded-full object-cover border border-white/70 cursor-pointer hover:border-teal-200 transition"
                   />
                   <div
                     v-else
                     @click="startChat(project.author)"
-                    class="w-8 h-8 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-xs text-white font-extrabold shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(2,132,199,0.7)] transition"
+                    class="w-8 h-8 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-xs text-white font-extrabold shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(34,199,184,0.7)] transition"
                   >
                     {{ project.author?.username?.charAt(0).toUpperCase() || 'U' }}
                   </div>
                 </UserHoverCard>
                 <div class="min-w-0">
-                  <div class="text-sm font-extrabold text-slate-900 truncate cursor-pointer hover:text-sky-700 transition" @click="startChat(project.author)">
+                  <div class="text-sm font-extrabold text-slate-900 truncate cursor-pointer hover:text-teal-700 transition" @click="startChat(project.author)">
                     {{ project.author?.username || '匿名用户' }}
                   </div>
                   <div class="text-xs text-slate-500 font-semibold">创作者</div>
@@ -489,7 +643,7 @@ watch(
                   @click="toggleProjectLike"
                   variant="primary"
                   class="flex-1 px-4 py-3 rounded-xl text-sm font-extrabold text-white flex items-center justify-center gap-2"
-                  :class="project.isLiked ? 'shadow-lg shadow-rose-500/20' : 'shadow-lg shadow-sky-500/20'"
+                  :class="project.isLiked ? 'shadow-lg shadow-rose-500/20' : 'shadow-lg shadow-teal-500/20'"
                 >
                   <i :class="project.isLiked ? 'ph-fill ph-heart' : 'ph-bold ph-heart'"></i>
                   {{ project.isLiked ? '已点赞' : '点赞' }}
@@ -572,7 +726,7 @@ watch(
 
           <div class="glass-card rounded-2xl border border-white/70 p-6">
             <div class="flex items-start gap-3">
-              <div class="w-10 h-10 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-700">
+              <div class="w-10 h-10 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-700">
                 <i class="ph-bold ph-info text-xl"></i>
               </div>
               <div class="flex-1">
@@ -620,7 +774,7 @@ watch(
                 :key="rootComment.id"
                 :id="`comment-${rootComment.id}`"
                 class="group scroll-mt-24 rounded-2xl border border-transparent p-4 transition"
-                :class="highlightedCommentId === rootComment.id ? 'bg-white/60 border-sky-200 ring-4 ring-sky-300/30 shadow-[0_20px_60px_-45px_rgba(2,132,199,0.8)]' : 'hover:bg-white/25'"
+                :class="highlightedCommentId === rootComment.id ? 'bg-white/60 border-teal-200 ring-4 ring-teal-300/30 shadow-[0_20px_60px_-45px_rgba(34,199,184,0.8)]' : 'hover:bg-white/25'"
               >
                 <div class="flex gap-3">
                   <UserHoverCard :user="rootComment.author" class="shrink-0">
@@ -628,12 +782,12 @@ watch(
                       v-if="rootComment.author?.avatar"
                       :src="rootComment.author.avatar"
                       @click="startChat(rootComment.author)"
-                      class="w-9 h-9 rounded-full object-cover border border-white/70 cursor-pointer hover:border-sky-200 transition"
+                      class="w-9 h-9 rounded-full object-cover border border-white/70 cursor-pointer hover:border-teal-200 transition"
                     />
                     <div
                       v-else
                       @click="startChat(rootComment.author)"
-                      class="w-9 h-9 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-xs text-white font-bold shrink-0 shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(2,132,199,0.7)] transition"
+                      class="w-9 h-9 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-xs text-white font-bold shrink-0 shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(34,199,184,0.7)] transition"
                     >
                       {{ rootComment.author?.username?.charAt(0).toUpperCase() || 'U' }}
                     </div>
@@ -641,7 +795,7 @@ watch(
 
                   <div class="flex-1">
                     <div class="flex items-center gap-2">
-                      <div class="text-sm font-extrabold text-slate-700 cursor-pointer hover:text-sky-700 transition" @click="startChat(rootComment.author)">
+                      <div class="text-sm font-extrabold text-slate-700 cursor-pointer hover:text-teal-700 transition" @click="startChat(rootComment.author)">
                         {{ rootComment.author?.username }}
                       </div>
                       <div class="text-[11px] text-slate-500 font-semibold">{{ formatDate(rootComment.createdAt) }}</div>
@@ -649,6 +803,16 @@ watch(
 
                     <div class="text-slate-700 text-sm leading-relaxed mt-1 whitespace-pre-wrap break-words">
                       <MentionText :text="rootComment.content" :highlight="user?.username || ''" />
+                    </div>
+
+                    <div v-if="rootComment.images?.length" class="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                      <img
+                        v-for="img in rootComment.images"
+                        :key="img.url || img"
+                        :src="img.url || img"
+                        class="w-full h-20 rounded-xl object-cover border border-white/70 bg-white/50"
+                        loading="lazy"
+                      />
                     </div>
 
                     <div class="flex items-center gap-4 mt-3 text-xs text-slate-500">
@@ -661,8 +825,16 @@ watch(
                         {{ rootComment.likesCount || '赞' }}
                       </button>
 
-                      <button @click="setReply(rootComment, rootComment.id)" class="hover:text-sky-700 transition font-semibold">
+                      <button @click="setReply(rootComment, rootComment.id)" class="hover:text-teal-700 transition font-semibold">
                         回复
+                      </button>
+
+                      <button
+                        v-if="user?.uid && rootComment.author?.uid === user.uid"
+                        @click="deleteComment(rootComment)"
+                        class="hover:text-rose-600 transition font-semibold"
+                      >
+                        删除
                       </button>
                     </div>
                   </div>
@@ -674,19 +846,19 @@ watch(
                     :key="child.id"
                     :id="`comment-${child.id}`"
                     class="flex gap-2 scroll-mt-24 rounded-xl border border-transparent p-3 transition"
-                    :class="highlightedCommentId === child.id ? 'bg-white/60 border-sky-200 ring-4 ring-sky-300/25 shadow-[0_18px_55px_-42px_rgba(2,132,199,0.75)]' : 'hover:bg-white/20'"
+                    :class="highlightedCommentId === child.id ? 'bg-white/60 border-teal-200 ring-4 ring-teal-300/25 shadow-[0_18px_55px_-42px_rgba(34,199,184,0.75)]' : 'hover:bg-white/20'"
                   >
                     <UserHoverCard :user="child.author" class="shrink-0">
                       <img
                         v-if="child.author?.avatar"
                         :src="child.author.avatar"
                         @click="startChat(child.author)"
-                        class="w-7 h-7 rounded-full object-cover border border-white/70 mt-0.5 cursor-pointer hover:border-sky-200 transition"
+                        class="w-7 h-7 rounded-full object-cover border border-white/70 mt-0.5 cursor-pointer hover:border-teal-200 transition"
                       />
                       <div
                         v-else
                         @click="startChat(child.author)"
-                        class="w-7 h-7 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-[10px] text-white font-bold shrink-0 mt-0.5 shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(2,132,199,0.7)] transition"
+                        class="w-7 h-7 rounded-full bg-gradient-to-tr from-teal-400 to-amber-500 flex items-center justify-center text-[10px] text-white font-bold shrink-0 mt-0.5 shadow-sm cursor-pointer hover:shadow-[0_18px_45px_-30px_rgba(34,199,184,0.7)] transition"
                       >
                         {{ child.author?.username?.charAt(0).toUpperCase() || 'U' }}
                       </div>
@@ -694,7 +866,7 @@ watch(
 
                     <div class="flex-1">
                       <div class="flex items-center gap-2">
-                        <div class="text-xs font-extrabold text-slate-700 cursor-pointer hover:text-sky-700 transition" @click="startChat(child.author)">
+                        <div class="text-xs font-extrabold text-slate-700 cursor-pointer hover:text-teal-700 transition" @click="startChat(child.author)">
                           {{ child.author?.username }}
                         </div>
                         <div class="text-[11px] text-slate-500 font-semibold">{{ formatDate(child.createdAt) }}</div>
@@ -703,12 +875,22 @@ watch(
                       <div class="text-sm leading-relaxed text-slate-700 mt-1 whitespace-pre-wrap break-words">
                         <span v-if="child.replyToUser" class="text-slate-500 text-xs">
                           回复
-                          <span class="text-sky-700 font-semibold hover:underline cursor-pointer" @click="startChat(child.replyToUser)">
+                          <span class="text-teal-700 font-semibold hover:underline cursor-pointer" @click="startChat(child.replyToUser)">
                             @{{ child.replyToUser.username }}
                           </span>
                           :
                         </span>
                         <MentionText :text="child.content" :highlight="user?.username || ''" />
+                      </div>
+
+                      <div v-if="child.images?.length" class="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                        <img
+                          v-for="img in child.images"
+                          :key="img.url || img"
+                          :src="img.url || img"
+                          class="w-full h-16 rounded-xl object-cover border border-white/70 bg-white/50"
+                          loading="lazy"
+                        />
                       </div>
 
                       <div class="flex items-center gap-4 mt-2 text-xs text-slate-500">
@@ -721,8 +903,16 @@ watch(
                           {{ child.likesCount || '赞' }}
                         </button>
 
-                        <button @click="setReply(child, rootComment.id)" class="hover:text-sky-700 transition font-semibold">
+                        <button @click="setReply(child, rootComment.id)" class="hover:text-teal-700 transition font-semibold">
                           回复
+                        </button>
+
+                        <button
+                          v-if="user?.uid && child.author?.uid === user.uid"
+                          @click="deleteComment(child)"
+                          class="hover:text-rose-600 transition font-semibold"
+                        >
+                          删除
                         </button>
                       </div>
                     </div>
@@ -738,7 +928,7 @@ watch(
               class="flex items-center justify-between bg-white/55 px-3 py-1.5 rounded-lg mb-2 text-xs text-slate-700 border border-white/75 backdrop-blur-xl"
             >
               <span>
-                正在回复 <span class="text-sky-700 font-extrabold">@{{ replyTarget.username }}</span>
+                正在回复 <span class="text-teal-700 font-extrabold">@{{ replyTarget.username }}</span>
               </span>
               <UiButton @click="cancelReply" variant="ghost" class="px-2 py-1 rounded">
                 <i class="ph-bold ph-x"></i>
@@ -747,6 +937,7 @@ watch(
 
             <div class="flex gap-2 items-center">
               <EmojiPicker v-model="newCommentContent" :target="commentInputRef" :disabled="isSubmittingComment" size="sm" />
+              <input ref="commentImageInput" type="file" accept="image/*" multiple class="hidden" @change="handlePickCommentImages" />
               <input
                 id="comments-input"
                 ref="commentInputRef"
@@ -757,14 +948,45 @@ watch(
                 class="flex-1 input-glass rounded-xl px-4 py-2 text-sm"
               />
               <UiButton
+                variant="secondary"
+                class="px-3 py-2 rounded-xl text-sm font-semibold flex items-center gap-2"
+                :disabled="isSubmittingComment || pickedCommentImages.length >= MAX_COMMENT_IMAGES"
+                @click="triggerPickCommentImages"
+              >
+                <i class="ph-bold ph-image"></i>
+                图片
+              </UiButton>
+              <UiButton
                 @click="submitComment"
                 variant="primary"
-                :disabled="isSubmittingComment || !newCommentContent"
+                :disabled="isSubmittingComment || (!newCommentContent.trim() && !pickedCommentImages.length)"
                 class="text-white px-4 py-2 rounded-lg text-sm font-semibold transition disabled:opacity-50"
               >
                 <i v-if="isSubmittingComment" class="ph-bold ph-spinner animate-spin"></i>
                 发送
               </UiButton>
+            </div>
+
+            <div v-if="pickedCommentImages.length" class="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
+              <div
+                v-for="(it, idx) in pickedCommentImages"
+                :key="it.previewUrl"
+                class="relative rounded-xl overflow-hidden border border-white/70 bg-white/50"
+              >
+                <img :src="it.previewUrl" class="w-full h-20 object-cover" />
+                <button
+                  type="button"
+                  class="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/55 text-white flex items-center justify-center"
+                  @click.stop="removePickedCommentImage(idx)"
+                  aria-label="删除图片"
+                >
+                  <i class="ph-bold ph-x"></i>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="commentError" class="mt-2 text-xs font-semibold text-rose-600">
+              {{ commentError }}
             </div>
           </div>
         </section>

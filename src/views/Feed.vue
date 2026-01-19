@@ -23,6 +23,17 @@ const pickedImages = ref([]); // [{ file, previewUrl }]
 
 const FEED_TYPES = Object.freeze(['followed_project', 'followed_post']);
 
+const feedStats = [
+  { label: '本周更新', value: '48' },
+  { label: '互动提醒', value: '16' },
+  { label: '关注创作者', value: '12' },
+];
+const feedTips = [
+  '关注创作者后，作品更新会第一时间同步。',
+  '发布动态时可附带作品链接，方便协作。',
+  '点击作品卡片可直接进入多轨工程。',
+];
+
 const ensureLoggedIn = () => {
   if (!isAuthReady.value) return false;
   if (user.value) return true;
@@ -32,7 +43,7 @@ const ensureLoggedIn = () => {
 
 const coverStyle = (cover) => {
   const c = String(cover || '').trim();
-  if (!c) return { background: 'linear-gradient(135deg,rgba(56,189,248,0.28),rgba(99,102,241,0.22))' };
+  if (!c) return { background: 'linear-gradient(135deg,rgba(34,199,184,0.22),rgba(245,178,74,0.24))' };
   if (/^(https?:)?\/\//.test(c) || c.startsWith('/') || c.startsWith('data:')) {
     return { backgroundImage: `url(${c})`, backgroundSize: 'cover', backgroundPosition: 'center' };
   }
@@ -228,195 +239,284 @@ const openItem = (note) => {
   const projectId = note?.project?.id || note?.project?._id || note?.project;
   if (projectId) router.push({ name: 'ProjectDetail', params: { id: projectId } });
 };
+
+const prefetchNote = async (note) => {
+  try {
+    if (note?.type === 'followed_post') {
+      const pid = note?.post?.id || note?.post?._id || note?.post;
+      if (!pid) return;
+      const base = `/api/posts/${encodeURIComponent(pid)}`;
+      await fetchCached(`api:${base}`, async () => {
+        const res = await authFetch(base);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return data;
+      }, { ttlMs: 30_000, staleWhileRevalidate: true });
+
+      const commentsUrl = `${base}/comments?limit=50`;
+      await fetchCached(`api:${commentsUrl}`, async () => {
+        const res = await authFetch(commentsUrl);
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok) throw new Error(data?.message || '加载失败');
+        return Array.isArray(data) ? data : [];
+      }, { ttlMs: 20_000, staleWhileRevalidate: true });
+      return;
+    }
+
+    const projectId = note?.project?.id || note?.project?._id || note?.project;
+    if (!projectId) return;
+    const base = `/api/projects/${encodeURIComponent(projectId)}`;
+    await fetchCached(`api:${base}`, async () => {
+      const res = await authFetch(base);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return data;
+    }, { ttlMs: 30_000, staleWhileRevalidate: true });
+
+    const commentsUrl = `${base}/comments?limit=50`;
+    await fetchCached(`api:${commentsUrl}`, async () => {
+      const res = await authFetch(commentsUrl);
+      const data = res.ok ? await res.json() : null;
+      if (!res.ok) throw new Error(data?.message || '加载失败');
+      return Array.isArray(data) ? data : [];
+    }, { ttlMs: 20_000, staleWhileRevalidate: true });
+  } catch {
+    // ignore prefetch errors
+  }
+};
 </script>
 
 <template>
   <div class="page pb-12">
-    <div class="page-container max-w-6xl">
-      <div class="flex items-center justify-between gap-4 mb-6">
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-2xl bg-white/65 border border-white/70 backdrop-blur-xl flex items-center justify-center shadow-sm">
-            <i class="ph-bold ph-broadcast text-sky-700 text-xl"></i>
+    <div class="page-container max-w-6xl space-y-8">
+      <section class="hero-surface px-6 sm:px-10 py-8 sm:py-10">
+        <div class="hero-grid"></div>
+        <div class="grain-overlay"></div>
+        <div class="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+          <div class="flex items-center gap-4">
+            <div class="w-12 h-12 rounded-2xl bg-white/70 border border-white/70 backdrop-blur-xl flex items-center justify-center shadow-sm">
+              <i class="ph-bold ph-broadcast text-teal-700 text-xl"></i>
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-slate-500">动态中心</div>
+              <div class="text-2xl font-extrabold text-slate-900">关注动态</div>
+              <div class="text-sm text-slate-600">你关注的创作者更新都会出现在这里。</div>
+            </div>
           </div>
-          <div>
-            <div class="text-xl font-extrabold text-slate-900">动态</div>
-            <div class="text-xs text-slate-500 font-semibold">关注的创作者发布新作品和动态会出现在这里</div>
-          </div>
-        </div>
 
-        <div class="flex items-center gap-2">
-          <UiButton variant="secondary" class="px-4 py-2 rounded-xl text-sm font-semibold" :disabled="isLoading || !hasItems" @click="markAllRead">
-            全部已读
-          </UiButton>
-          <UiButton variant="ghost" class="px-3 py-2 rounded-xl text-sm font-semibold" @click="fetchFeed({ force: true })">
-            <i class="ph-bold ph-arrow-clockwise"></i>
-          </UiButton>
-        </div>
-      </div>
-
-      <div v-if="!user && isAuthReady" class="glass-card rounded-2xl border border-white/70 p-8">
-        <div class="flex items-start gap-4">
-          <div class="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-600">
-            <i class="ph-bold ph-lock-key text-2xl"></i>
-          </div>
-          <div>
-            <div class="text-lg font-extrabold text-slate-900 mb-1">登录后查看动态</div>
-            <div class="text-slate-600 text-sm mb-4">关注喜欢的创作者，第一时间获取新作品和动态。</div>
-            <UiButton variant="primary" class="px-5 py-2.5 rounded-xl text-sm font-semibold text-white" @click="router.push('/login')">
-              立即登录
+          <div class="flex items-center gap-2">
+            <UiButton variant="secondary" class="px-4 py-2 rounded-xl text-sm font-semibold" :disabled="isLoading || !hasItems" @click="markAllRead">
+              全部已读
+            </UiButton>
+            <UiButton variant="ghost" class="px-3 py-2 rounded-xl text-sm font-semibold" @click="fetchFeed({ force: true })">
+              <i class="ph-bold ph-arrow-clockwise"></i>
             </UiButton>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div v-else class="glass-card rounded-2xl border border-white/70 overflow-hidden">
-        <div v-if="user" class="p-6 border-b border-slate-200/70 bg-white/35">
-          <div class="flex items-start gap-4">
-            <div class="shrink-0">
-              <img v-if="user?.avatar" :src="user.avatar" class="w-10 h-10 rounded-full object-cover border border-white/70" />
-              <div
-                v-else
-                class="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-sm font-extrabold border border-white/70"
-              >
-                {{ user?.username?.charAt(0)?.toUpperCase() || 'U' }}
+      <div class="grid grid-cols-1 lg:grid-cols-[2fr,1fr] gap-6">
+        <div class="space-y-6">
+          <div v-if="!user && isAuthReady" class="glass-card rounded-3xl border border-white/70 p-8">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-600">
+                <i class="ph-bold ph-lock-key text-2xl"></i>
               </div>
-            </div>
-
-            <div class="flex-1">
-              <textarea
-                ref="composerEl"
-                v-model="draftContent"
-                rows="3"
-                class="w-full rounded-2xl border border-white/70 bg-white/60 backdrop-blur-xl px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-sky-200/80"
-                placeholder="发布一条动态…"
-              ></textarea>
-              <input ref="imageInput" type="file" accept="image/*" multiple class="hidden" @change="handlePickImages" />
-
-              <div v-if="pickedImages.length" class="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
-                <div v-for="(it, idx) in pickedImages" :key="it.previewUrl" class="relative rounded-xl overflow-hidden border border-white/70 bg-white/50">
-                  <img :src="it.previewUrl" class="w-full h-20 object-cover" />
-                  <button
-                    type="button"
-                    class="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/55 text-white flex items-center justify-center"
-                    @click.stop="removePickedImage(idx)"
-                    aria-label="删除图片"
-                  >
-                    <i class="ph-bold ph-x"></i>
-                  </button>
-                </div>
-              </div>
-
-              <div class="mt-3 flex items-center justify-between gap-3">
-                <div class="flex items-center gap-3 min-w-0">
-                  <EmojiPicker v-model="draftContent" :target="composerEl" />
-                  <UiButton
-                    variant="secondary"
-                    class="px-3 py-2 rounded-xl text-sm font-semibold flex items-center gap-2"
-                    :disabled="isPosting || pickedImages.length >= 6"
-                    @click="triggerPickImages"
-                  >
-                    <i class="ph-bold ph-image"></i>
-                    图片
-                  </UiButton>
-                  <div class="text-xs font-semibold text-slate-500 truncate">
-                    {{ draftContent.length }}/2000 · {{ pickedImages.length }}/6
-                    <span v-if="postError" class="text-rose-600 ml-2">{{ postError }}</span>
-                  </div>
-                </div>
-                <UiButton
-                  variant="primary"
-                  class="px-5 py-2.5 rounded-xl text-sm font-extrabold text-white flex items-center gap-2"
-                  :disabled="isPosting || (!draftContent.trim() && !pickedImages.length)"
-                  @click="publishPost"
-                >
-                  <i class="ph-bold ph-paper-plane-tilt"></i>
-                  发布
+              <div>
+                <div class="text-lg font-extrabold text-slate-900 mb-1">登录后查看动态</div>
+                <div class="text-slate-600 text-sm mb-4">关注喜欢的创作者，第一时间获取新作品和动态。</div>
+                <UiButton variant="primary" class="px-5 py-2.5 rounded-xl text-sm font-semibold text-white" @click="router.push('/login')">
+                  立即登录
                 </UiButton>
               </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="isLoading" class="p-6 space-y-3">
-          <div v-for="n in 8" :key="n" class="h-16 rounded-2xl skeleton"></div>
-        </div>
+          <div v-else class="glass-card rounded-3xl border border-white/70 overflow-hidden">
+            <div v-if="user" class="p-6 border-b border-slate-200/70 bg-white/35">
+              <div class="flex items-start gap-4">
+                <div class="shrink-0">
+                  <img v-if="user?.avatar" :src="user.avatar" class="w-10 h-10 rounded-full object-cover border border-white/70" />
+                  <div
+                    v-else
+                    class="w-10 h-10 rounded-full bg-gradient-to-tr from-teal-400 to-amber-400 flex items-center justify-center text-white text-sm font-extrabold border border-white/70"
+                  >
+                    {{ user?.username?.charAt(0)?.toUpperCase() || 'U' }}
+                  </div>
+                </div>
 
-        <div v-else-if="errorMsg" class="p-6 text-rose-700 text-sm font-semibold">
-          {{ errorMsg }}
-        </div>
+                <div class="flex-1">
+                  <textarea
+                    ref="composerEl"
+                    v-model="draftContent"
+                    rows="3"
+                    class="w-full rounded-2xl border border-white/70 bg-white/60 backdrop-blur-xl px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:ring-2 focus:ring-teal-200/80"
+                    placeholder="发布一条动态…"
+                  ></textarea>
+                  <input ref="imageInput" type="file" accept="image/*" multiple class="hidden" @change="handlePickImages" />
 
-        <div v-else-if="!hasItems" class="p-10 text-center text-slate-500">
-          <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white/60 border border-white/70 shadow-sm">
-            <i class="ph-duotone ph-users-three text-3xl text-slate-500"></i>
-          </div>
-          <div class="mt-3 font-extrabold text-slate-900">还没有动态</div>
-          <div class="text-sm font-semibold mt-1">去社区看看，关注一些你喜欢的创作者。</div>
-          <UiButton variant="primary" class="mt-5 px-6 py-2.5 rounded-xl text-white text-sm font-semibold" @click="router.push('/explore')">
-            去探索社区
-          </UiButton>
-        </div>
+                  <div v-if="pickedImages.length" class="mt-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    <div v-for="(it, idx) in pickedImages" :key="it.previewUrl" class="relative rounded-xl overflow-hidden border border-white/70 bg-white/50">
+                      <img :src="it.previewUrl" class="w-full h-20 object-cover" />
+                      <button
+                        type="button"
+                        class="absolute top-1 right-1 w-7 h-7 rounded-full bg-black/55 text-white flex items-center justify-center"
+                        @click.stop="removePickedImage(idx)"
+                        aria-label="删除图片"
+                      >
+                        <i class="ph-bold ph-x"></i>
+                      </button>
+                    </div>
+                  </div>
 
-        <div v-else class="divide-y divide-slate-200/70">
-          <button
-            v-for="note in items"
-            :key="note.id"
-            type="button"
-            class="w-full text-left px-4 sm:px-6 py-4 flex items-center gap-4 hover:bg-white/35 transition"
-            @click="openItem(note)"
-          >
-            <div class="shrink-0">
-              <img v-if="note.sender?.avatar" :src="note.sender.avatar" class="w-10 h-10 rounded-full object-cover border border-white/70" />
-              <div
-                v-else
-                class="w-10 h-10 rounded-full bg-gradient-to-tr from-sky-400 to-indigo-500 flex items-center justify-center text-white text-sm font-extrabold border border-white/70"
+                  <div class="mt-3 flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <EmojiPicker v-model="draftContent" :target="composerEl" />
+                      <UiButton
+                        variant="secondary"
+                        class="px-3 py-2 rounded-xl text-sm font-semibold flex items-center gap-2"
+                        :disabled="isPosting || pickedImages.length >= 6"
+                        @click="triggerPickImages"
+                      >
+                        <i class="ph-bold ph-image"></i>
+                        图片
+                      </UiButton>
+                      <div class="text-xs font-semibold text-slate-500 truncate">
+                        {{ draftContent.length }}/2000 · {{ pickedImages.length }}/6
+                        <span v-if="postError" class="text-rose-600 ml-2">{{ postError }}</span>
+                      </div>
+                    </div>
+                    <UiButton
+                      variant="primary"
+                      class="px-5 py-2.5 rounded-xl text-sm font-extrabold text-white flex items-center gap-2"
+                      :disabled="isPosting || (!draftContent.trim() && !pickedImages.length)"
+                      @click="publishPost"
+                    >
+                      <i class="ph-bold ph-paper-plane-tilt"></i>
+                      发布
+                    </UiButton>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="isLoading" class="p-6 space-y-3">
+              <div v-for="n in 8" :key="n" class="h-16 rounded-2xl skeleton"></div>
+            </div>
+
+            <div v-else-if="errorMsg" class="p-6 text-rose-700 text-sm font-semibold">
+              {{ errorMsg }}
+            </div>
+
+            <div v-else-if="!hasItems" class="p-10 text-center text-slate-500">
+              <div class="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white/60 border border-white/70 shadow-sm">
+                <i class="ph-duotone ph-users-three text-3xl text-slate-500"></i>
+              </div>
+              <div class="mt-3 font-extrabold text-slate-900">还没有动态</div>
+              <div class="text-sm font-semibold mt-1">去社区看看，关注一些你喜欢的创作者。</div>
+              <UiButton variant="primary" class="mt-5 px-6 py-2.5 rounded-xl text-white text-sm font-semibold" @click="router.push('/explore')">
+                去探索社区
+              </UiButton>
+            </div>
+
+            <div v-else class="divide-y divide-slate-200/70">
+              <button
+                v-for="note in items"
+                :key="note.id"
+                type="button"
+                class="w-full text-left px-4 sm:px-6 py-4 flex items-center gap-4 hover:bg-white/35 transition"
+                @click="openItem(note)"
+                @mouseenter="prefetchNote(note)"
               >
-                {{ note.sender?.username?.charAt(0)?.toUpperCase() || 'U' }}
-              </div>
+                <div class="shrink-0">
+                  <img v-if="note.sender?.avatar" :src="note.sender.avatar" class="w-10 h-10 rounded-full object-cover border border-white/70" />
+                  <div
+                    v-else
+                    class="w-10 h-10 rounded-full bg-gradient-to-tr from-teal-400 to-amber-400 flex items-center justify-center text-white text-sm font-extrabold border border-white/70"
+                  >
+                    {{ note.sender?.username?.charAt(0)?.toUpperCase() || 'U' }}
+                  </div>
+                </div>
+
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <div class="text-sm font-extrabold text-slate-900 truncate">{{ note.sender?.username || '未知用户' }}</div>
+                    <span v-if="!note.isRead" class="w-2 h-2 rounded-full bg-rose-500"></span>
+                    <div class="text-[11px] text-slate-500 font-semibold ml-auto shrink-0">{{ timeAgo(note.createdAt) }}</div>
+                  </div>
+
+                  <div v-if="note.type === 'followed_post'" class="mt-1">
+                    <div class="text-sm text-slate-700">
+                      发布了动态
+                      <span v-if="note.post?.project?.title" class="font-semibold text-slate-900 ml-1">· 分享作品 {{ note.post.project.title }}</span>
+                    </div>
+                    <div v-if="note.post?.content" class="mt-1 text-sm text-slate-800 clamp-3 whitespace-pre-wrap">
+                      <MentionText :text="note.post.content" :highlight="user?.username || ''" />
+                    </div>
+                    <div v-if="note.post?.images?.length" class="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                      <img
+                        v-for="img in note.post.images.slice(0, 6)"
+                        :key="img.url"
+                        :src="img.url"
+                        class="w-full h-20 rounded-xl object-cover border border-white/70 bg-white/50"
+                        loading="lazy"
+                      />
+                    </div>
+                  </div>
+
+                  <div v-else class="mt-1 text-sm text-slate-700 truncate">
+                    发布了新作品：<span class="font-semibold text-slate-900">{{ note.project?.title || '未命名作品' }}</span>
+                  </div>
+                </div>
+
+                <div
+                  v-if="note.type === 'followed_project' && note.project"
+                  class="w-16 h-12 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
+                  :style="coverStyle(note.project.cover)"
+                ></div>
+                <div
+                  v-else-if="note.type === 'followed_post' && note.post?.project"
+                  class="w-16 h-12 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
+                  :style="coverStyle(note.post.project.cover)"
+                ></div>
+              </button>
             </div>
-
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2">
-                <div class="text-sm font-extrabold text-slate-900 truncate">{{ note.sender?.username || '未知用户' }}</div>
-                <span v-if="!note.isRead" class="w-2 h-2 rounded-full bg-rose-500"></span>
-                <div class="text-[11px] text-slate-500 font-semibold ml-auto shrink-0">{{ timeAgo(note.createdAt) }}</div>
-              </div>
-
-              <div v-if="note.type === 'followed_post'" class="mt-1">
-                <div class="text-sm text-slate-700">
-                  发布了动态
-                  <span v-if="note.post?.project?.title" class="font-semibold text-slate-900 ml-1">· 分享作品 {{ note.post.project.title }}</span>
-                </div>
-                <div v-if="note.post?.content" class="mt-1 text-sm text-slate-800 clamp-3 whitespace-pre-wrap">
-                  <MentionText :text="note.post.content" :highlight="user?.username || ''" />
-                </div>
-                <div v-if="note.post?.images?.length" class="mt-2 grid grid-cols-3 sm:grid-cols-4 gap-2">
-                  <img
-                    v-for="img in note.post.images.slice(0, 6)"
-                    :key="img.url"
-                    :src="img.url"
-                    class="w-full h-20 rounded-xl object-cover border border-white/70 bg-white/50"
-                    loading="lazy"
-                  />
-                </div>
-              </div>
-
-              <div v-else class="mt-1 text-sm text-slate-700 truncate">
-                发布了新作品：<span class="font-semibold text-slate-900">{{ note.project?.title || '未命名作品' }}</span>
-              </div>
-            </div>
-
-            <div
-              v-if="note.type === 'followed_project' && note.project"
-              class="w-16 h-12 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
-              :style="coverStyle(note.project.cover)"
-            ></div>
-            <div
-              v-else-if="note.type === 'followed_post' && note.post?.project"
-              class="w-16 h-12 rounded-xl bg-white/50 border border-white/70 shrink-0 shadow-sm"
-              :style="coverStyle(note.post.project.cover)"
-            ></div>
-          </button>
+          </div>
         </div>
+
+        <aside class="space-y-4">
+          <div class="glass-card rounded-3xl border border-white/70 p-6">
+            <div class="text-sm font-extrabold text-slate-900">动态概览</div>
+            <div class="mt-4 grid grid-cols-3 gap-3 text-center">
+              <div v-for="stat in feedStats" :key="stat.label" class="rounded-2xl bg-white/70 border border-white/70 py-3">
+                <div class="text-lg font-extrabold text-slate-900">{{ stat.value }}</div>
+                <div class="text-[11px] text-slate-500 font-semibold">{{ stat.label }}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="glass-card rounded-3xl border border-white/70 p-6">
+            <div class="text-sm font-extrabold text-slate-900">动态小贴士</div>
+            <ul class="mt-3 space-y-2 text-xs text-slate-600 font-semibold">
+              <li v-for="tip in feedTips" :key="tip" class="flex items-start gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-teal-500 mt-1.5"></span>
+                <span>{{ tip }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="glass-card rounded-3xl border border-white/70 p-6">
+            <div class="text-sm font-extrabold text-slate-900">快速入口</div>
+            <div class="mt-4 flex flex-col gap-3">
+              <UiButton variant="primary" class="px-4 py-2.5 rounded-full text-sm font-semibold text-white" @click="router.push('/studio')">
+                打开 Studio
+              </UiButton>
+              <UiButton variant="secondary" class="px-4 py-2.5 rounded-full text-sm font-semibold" @click="router.push('/explore')">
+                浏览社区
+              </UiButton>
+            </div>
+          </div>
+        </aside>
       </div>
     </div>
   </div>
