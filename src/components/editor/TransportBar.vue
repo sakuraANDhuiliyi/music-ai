@@ -9,6 +9,7 @@ const props = defineProps({
   transport: { type: Object, required: true },
   isPlaying: { type: Boolean, default: false },
   isImporting: { type: Boolean, default: false },
+  isSavingDraft: { type: Boolean, default: false },
   snapEnabled: { type: Boolean, default: true },
   autoCrossfade: { type: Boolean, default: true },
   canUndo: { type: Boolean, default: false },
@@ -252,10 +253,12 @@ const onPickFile = (e) => {
       <UiButton
         variant="secondary"
         class="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold"
+        :disabled="isSavingDraft"
         @click="emit('save-draft')"
       >
-        <i class="ph-bold ph-floppy-disk"></i>
-        保存草稿
+        <i v-if="isSavingDraft" class="ph-bold ph-spinner animate-spin"></i>
+        <i v-else class="ph-bold ph-floppy-disk"></i>
+        {{ isSavingDraft ? '保存中…' : '保存草稿' }}
       </UiButton>
 
       <UiButton

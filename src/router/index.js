@@ -16,6 +16,7 @@ import DailyRecommendations from '../views/DailyRecommendations.vue'
 import Feed from '../views/Feed.vue'
 import UserSpace from '../views/UserSpace.vue'
 import PostDetail from '../views/PostDetail.vue'
+import Tutorial from '../views/Tutorial.vue'
 import { useLoader } from '../composables/useLoader.js'
 const routes = [
     { path: '/', name: 'Home', component: Home },
@@ -27,6 +28,7 @@ const routes = [
     { path: '/projects/:id', name: 'ProjectDetail', component: ProjectDetail },
     { path: '/posts/:id', name: 'PostDetail', component: PostDetail },
     { path: '/library', name: 'Library', component: Library, meta: { keepAlive: true } },
+    { path: '/tutorial/:slug?', name: 'Tutorial', component: Tutorial },
     { path: '/ai-chord', name: 'AiChordCreator', component: AiChordCreator },
     { path: '/search', name: 'Search', component: Search, meta: { keepAlive: true } },
     { path: '/audio-to-sheet', name: 'AudioToSheet', component: AudioToSheet },

@@ -7,6 +7,7 @@ import MentionText from '../components/MentionText.vue';
 import { fetchCached } from '../utils/resourceCache.js';
 import { apiCreateProjectDraft, apiGetDraftProjects, apiGetProjectSource, apiUpdateProjectDraft } from '../api/projects.js';
 import { removeProjectDraft } from '../utils/projectStorage.js';
+import { notifyError } from '../utils/requestFeedback.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -62,11 +63,102 @@ const coverStyle = (cover) => {
 
 const userCoverStyle = (cover) => {
   const c = String(cover || '').trim();
-  if (!c) return { background: 'linear-gradient(135deg,rgba(34,199,184,0.18),rgba(240,106,90,0.22))' };
+  if (!c) return { backgroundImage: 'url(/space.jpg)', backgroundSize: 'cover', backgroundPosition: 'center' };
   if (/^(https?:)?\/\//.test(c) || c.startsWith('/') || c.startsWith('data:')) {
     return { backgroundImage: `url(${c})`, backgroundSize: 'cover', backgroundPosition: 'center' };
   }
   return { background: c };
+};
+
+const coverFileInput = ref(null);
+const isCoverUploading = ref(false);
+
+const triggerCoverFileInput = () => {
+  if (!isSelf.value) return;
+  if (!isAuthReady.value || !user.value) return router.push('/login');
+  coverFileInput.value?.click?.();
+};
+
+const saveCoverToProfile = async (coverUrl) => {
+  if (!isSelf.value) return;
+  if (!isAuthReady.value || !user.value) return;
+
+  const next = String(coverUrl || '');
+  const res = await authFetch('/api/users/me', {
+    method: 'PUT',
+    body: JSON.stringify({ cover: next }),
+  });
+
+  if (!res.ok) throw new Error('封面保存失败');
+
+  let updated = null;
+  try {
+    updated = await res.json();
+  } catch {
+    updated = null;
+  }
+
+  if (updated && typeof updated === 'object') {
+    user.value = updated;
+    if (profile.value) profile.value = { ...profile.value, cover: updated.cover ?? next };
+  } else if (profile.value) {
+    profile.value = { ...profile.value, cover: next };
+  }
+};
+
+const handleCoverFileChange = async (event) => {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+
+  if (!file.type?.startsWith?.('image/')) {
+    notifyError('请上传图片文件');
+    event.target.value = '';
+    return;
+  }
+
+  const maxSizeMb = 5;
+  if (file.size > maxSizeMb * 1024 * 1024) {
+    notifyError(`图片不能超过 ${maxSizeMb}MB`);
+    event.target.value = '';
+    return;
+  }
+
+  isCoverUploading.value = true;
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const response = await authFetch('/api/upload', { method: 'POST', body: formData });
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      throw new Error(`上传失败: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.message || '上传失败');
+    if (!data?.url) throw new Error('上传失败：缺少图片地址');
+
+    await saveCoverToProfile(data.url);
+  } catch (e) {
+    notifyError(`封面上传出错: ${e?.message || '操作失败'}`);
+  } finally {
+    isCoverUploading.value = false;
+    event.target.value = '';
+  }
+};
+
+const resetCoverToDefault = async () => {
+  if (!isSelf.value) return;
+  if (!isAuthReady.value || !user.value) return router.push('/login');
+  isCoverUploading.value = true;
+  try {
+    await saveCoverToProfile('');
+  } catch (e) {
+    notifyError(`恢复默认封面失败: ${e?.message || '操作失败'}`);
+  } finally {
+    isCoverUploading.value = false;
+  }
 };
 
 const normalizedDrafts = computed(() => {
@@ -525,7 +617,36 @@ watch(
       <div v-else class="space-y-6">
         <div class="glass-card rounded-3xl border border-white/70 overflow-hidden">
           <div class="h-32 sm:h-40 relative" :style="userCoverStyle(profile?.cover)">
-            <div class="absolute inset-0 bg-white/10"></div>
+            <div class="absolute inset-0 bg-gradient-to-b from-white/10 via-white/0 to-white/25"></div>
+
+            <input ref="coverFileInput" type="file" class="hidden" accept="image/*" @change="handleCoverFileChange" />
+
+            <div v-if="isSelf" class="absolute right-4 bottom-3 flex items-center gap-2">
+              <UiButton
+                variant="secondary"
+                class="px-3 py-2 rounded-xl text-xs font-extrabold"
+                :disabled="isCoverUploading"
+                @click.stop="triggerCoverFileInput"
+              >
+                <i class="ph-bold ph-upload-simple"></i>
+                更换封面
+              </UiButton>
+              <UiButton
+                variant="ghost"
+                class="px-3 py-2 rounded-xl text-xs font-extrabold"
+                :disabled="isCoverUploading"
+                @click.stop="resetCoverToDefault"
+              >
+                恢复默认
+              </UiButton>
+            </div>
+
+            <div v-if="isCoverUploading" class="absolute inset-0 bg-black/25 backdrop-blur-[2px] flex items-center justify-center">
+              <div class="px-4 py-2 rounded-full bg-white/80 border border-white/70 text-sm font-extrabold text-slate-900 flex items-center gap-2">
+                <i class="ph-bold ph-spinner animate-spin"></i>
+                上传中...
+              </div>
+            </div>
           </div>
           <div class="p-6 grid grid-cols-1 lg:grid-cols-[1.3fr,1fr] gap-6">
             <div class="flex items-start gap-4 min-w-0">

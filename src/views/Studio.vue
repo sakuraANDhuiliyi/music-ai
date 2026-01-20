@@ -251,18 +251,28 @@ const showSaveToast = (message, tone = 'ok') => {
 
 const saveDraftNow = async () => {
   if (isSavingDraft.value) return;
-  if (!hasToken()) {
-    alert('请先登录后再保存草稿');
-    return;
-  }
   isSavingDraft.value = true;
   try {
-    const docId = await ensureServerDraft();
     const payload = serializeProjectForStorage(project.value);
-    await apiUpdateProjectDraft(docId, { project: payload, title: payload?.meta?.title || '' });
     const localId = String(project.value?.meta?.id || projectId.value || '').trim();
+    if (localId) {
+      try {
+        saveProjectDraft(localId, payload);
+        saveLastStudioSnapshot(localId, payload);
+      } catch {
+        // ignore local persistence failures
+      }
+    }
+
+    if (!hasToken()) {
+      showSaveToast('已保存到本地（未登录）');
+      return;
+    }
+
+    const docId = await ensureServerDraft();
+    await apiUpdateProjectDraft(docId, { project: payload, title: payload?.meta?.title || '' });
     if (localId && docId) setDraftMapId(localId, docId);
-    showSaveToast('草稿已保存');
+    showSaveToast('草稿已保存（云端）');
   } catch (e) {
     showSaveToast(e?.message || '草稿保存失败', 'error');
   } finally {
@@ -2501,17 +2511,20 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="fxOpen" class="fixed inset-0 z-[130] flex items-center justify-center px-4">
-      <div class="absolute inset-0 bg-slate-900/35 backdrop-blur-sm" @click="fxOpen = false"></div>
-      <div class="glass-card w-full max-w-3xl rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden">
-        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between">
+    <div v-if="fxOpen" class="fixed inset-0 z-[130] overflow-y-auto">
+      <div class="fixed inset-0 bg-slate-900/35 backdrop-blur-sm" @click="fxOpen = false"></div>
+      <div class="relative min-h-full flex items-start justify-center px-4 py-6 sm:py-10">
+        <div
+          class="glass-card w-full max-w-3xl rounded-2xl border border-white/70 shadow-2xl relative z-10 overflow-hidden flex flex-col max-h-[calc(100vh-3rem)] sm:max-h-[calc(100vh-5rem)]"
+        >
+        <div class="p-4 border-b border-slate-200/70 bg-white/30 flex items-center justify-between shrink-0">
           <div class="text-lg font-extrabold text-slate-900">混音 / 母带 FX</div>
           <UiButton variant="ghost" class="px-2 py-2 rounded-lg" @click="fxOpen = false">
             <i class="ph-bold ph-x"></i>
           </UiButton>
         </div>
 
-        <div v-if="project.fx" class="p-5 space-y-4">
+        <div v-if="project.fx" class="p-5 space-y-4 overflow-y-auto flex-1">
           <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <div class="text-sm font-semibold text-slate-900">启用 FX</div>
@@ -2784,9 +2797,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2">
+        <div class="p-4 border-t border-slate-200/70 bg-white/30 flex justify-end gap-2 shrink-0">
           <UiButton variant="ghost" class="px-4 py-2 rounded-lg text-sm font-semibold" @click="fxOpen = false">关闭</UiButton>
         </div>
+      </div>
       </div>
     </div>
 
@@ -2909,6 +2923,7 @@ onBeforeUnmount(() => {
       :transport="project.transport"
       :is-playing="isPlaying"
       :is-importing="isImportingAudio"
+      :is-saving-draft="isSavingDraft"
       :snap-enabled="snapEnabled"
       :auto-crossfade="autoCrossfade"
       :can-undo="undoStack.length > 0"

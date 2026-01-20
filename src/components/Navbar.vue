@@ -15,6 +15,7 @@ const searchQuery = ref('');
 
 const isMobileMenuOpen = ref(false);
 const isMoreOpen = ref(false);
+const isTutorialOpen = ref(false);
 const isFeedOpen = ref(false);
 const isNotesOpen = ref(false);
 const isUserMenuOpen = ref(false);
@@ -49,12 +50,19 @@ let consecutiveFailures = 0;
 const closeAllMenus = () => {
   isMobileMenuOpen.value = false;
   isMoreOpen.value = false;
+  isTutorialOpen.value = false;
   isFeedOpen.value = false;
   isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isLoginCardOpen.value = false;
   isMobileLoginCardOpen.value = false;
   clearLoginCardCloseTimer();
+};
+
+const toggleTutorialMenu = () => {
+  const next = !isTutorialOpen.value;
+  closeAllMenus();
+  isTutorialOpen.value = next;
 };
 
 watch(() => currentRoute.value.fullPath, closeAllMenus);
@@ -92,6 +100,7 @@ const ensureLoginForHover = () => {
   isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isMoreOpen.value = false;
+  isTutorialOpen.value = false;
   isMobileMenuOpen.value = false;
   isLoginCardOpen.value = true;
   return false;
@@ -309,6 +318,7 @@ const openLoginCard = () => {
   isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isMoreOpen.value = false;
+  isTutorialOpen.value = false;
   isMobileMenuOpen.value = false;
   isLoginCardOpen.value = !isLoginCardOpen.value;
 };
@@ -333,6 +343,7 @@ const openLoginCardHover = () => {
   isNotesOpen.value = false;
   isUserMenuOpen.value = false;
   isMoreOpen.value = false;
+  isTutorialOpen.value = false;
   isMobileMenuOpen.value = false;
   isLoginCardOpen.value = true;
 };
@@ -350,6 +361,13 @@ const desktopLinks = computed(() => [
   { label: 'Studio', name: 'Studio', to: '/studio' },
   { label: '社区', name: 'Explore', to: '/explore' },
   { label: '素材库', name: 'Library', to: '/library' },
+]);
+
+const tutorialLinks = computed(() => [
+  { key: 'prologue', label: '序章', to: '/tutorial/prologue' },
+  { key: 'chapter-1', label: '第一章', to: '/tutorial/chapter-1' },
+  { key: 'chapter-2', label: '第二章', to: '/tutorial/chapter-2' },
+  { key: 'practice', label: '练习', to: '/tutorial/practice' },
 ]);
 
 const moreLinks = computed(() => [
@@ -466,7 +484,7 @@ watch(
 
 <template>
   <nav ref="navRootRef" class="fixed top-0 inset-x-0 z-50 glass border-b border-white/60 shadow-[0_18px_45px_-35px_rgba(17,20,24,0.22)]">
-    <div class="mx-auto max-w-7xl h-16 px-4 sm:px-6 flex items-center gap-3">
+    <div class="w-full h-16 px-4 sm:px-6 flex items-center gap-3">
       <button class="flex items-center gap-2 shrink-0" @click="router.push('/')" aria-label="MuseAI 首页">
         <div class="w-9 h-9 bg-gradient-to-tr from-teal-400 to-amber-400 rounded-xl flex items-center justify-center shadow-[0_18px_45px_-28px_rgba(17,20,24,0.35)]">
           <i class="ph-fill ph-music-notes text-white text-xl"></i>
@@ -492,10 +510,37 @@ watch(
           <button
             type="button"
             class="px-3 py-2 rounded-full text-sm font-semibold transition border border-transparent inline-flex items-center gap-1"
+            :class="isTutorialOpen ? 'bg-white/70 text-slate-900 border-white/70' : 'text-slate-600 hover:text-slate-900 hover:bg-white/55'"
+            aria-haspopup="menu"
+            :aria-expanded="isTutorialOpen ? 'true' : 'false'"
+            @click="toggleTutorialMenu"
+          >
+            教程 <i class="ph-bold ph-caret-down text-sm"></i>
+          </button>
+
+          <div v-if="isTutorialOpen" class="absolute left-0 mt-2 w-56 glass-card rounded-2xl border border-white/70 overflow-hidden shadow-xl" role="menu">
+            <button
+              v-for="item in tutorialLinks"
+              :key="item.key"
+              type="button"
+              role="menuitem"
+              class="w-full px-4 py-3 text-sm font-semibold text-left flex items-center gap-3 hover:bg-white/35 transition"
+              @click="closeAllMenus(); router.push(item.to)"
+            >
+              <i class="ph-bold ph-book-open text-slate-500"></i>
+              <span>{{ item.label }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="relative">
+          <button
+            type="button"
+            class="px-3 py-2 rounded-full text-sm font-semibold transition border border-transparent inline-flex items-center gap-1"
             :class="isMoreOpen ? 'bg-white/70 text-slate-900 border-white/70' : 'text-slate-600 hover:text-slate-900 hover:bg-white/55'"
             aria-haspopup="menu"
             :aria-expanded="isMoreOpen ? 'true' : 'false'"
-            @click="isMoreOpen = !isMoreOpen"
+            @click="isMoreOpen = !isMoreOpen; isTutorialOpen = false"
           >
             AI工具 <i class="ph-bold ph-caret-down text-sm"></i>
           </button>
@@ -519,7 +564,7 @@ watch(
 
       <!-- Search -->
       <div class="hidden md:flex items-center flex-1 justify-center">
-        <form @submit.prevent="submitSearch" class="w-full max-w-[540px]">
+        <form @submit.prevent="submitSearch" class="w-full max-w-[760px] xl:max-w-[920px]">
           <div class="relative">
             <i class="ph-bold ph-magnifying-glass absolute left-3 top-3 text-slate-500"></i>
             <input
@@ -842,7 +887,7 @@ watch(
 
     <!-- Mobile sheet -->
     <div v-if="isMobileMenuOpen" class="lg:hidden border-t border-white/60">
-      <div class="mx-auto max-w-7xl px-4 sm:px-6 py-4 space-y-3" @click="isMobileLoginCardOpen = false">
+      <div class="w-full px-4 sm:px-6 py-4 space-y-3" @click="isMobileLoginCardOpen = false">
         <div class="grid grid-cols-2 gap-2">
           <button
             v-for="item in desktopLinks"
@@ -866,6 +911,19 @@ watch(
             @click="router.push(item.to)"
           >
             <i :class="item.icon" class="text-slate-500"></i>
+            {{ item.label }}
+          </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            v-for="item in tutorialLinks"
+            :key="item.key"
+            type="button"
+            class="px-4 py-3 rounded-2xl bg-white/45 border border-white/70 text-sm font-semibold text-slate-700 hover:bg-white/65 transition flex items-center gap-2"
+            @click="router.push(item.to)"
+          >
+            <i class="ph-bold ph-book-open text-slate-500"></i>
             {{ item.label }}
           </button>
         </div>
