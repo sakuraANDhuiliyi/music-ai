@@ -3285,11 +3285,45 @@ app.get('/api/projects/drafts', auth, async (req, res) => {
             }
         } catch { }
 
-        let q = Project.find({ author, status: 'draft' }).populate('author', 'username avatar').sort({ updatedAt: -1 });
+        // 说明：
+        // - 草稿列表用于个人空间展示，前端希望「每个工程只保留最新状态」并展示工程的本地 id/名称。
+        // - projectData 默认 select:false，这里临时取出 meta 信息后再剔除 projectData，避免响应过大。
+        let q = Project.find({ author, status: 'draft' })
+            .select('+projectData')
+            .populate('author', 'username avatar')
+            .sort({ updatedAt: -1 });
         if (skip) q = q.skip(skip);
         if (limit) q = q.limit(limit);
         const drafts = await q;
-        res.json(drafts);
+
+        // 每个工程（按 projectData.meta.id）只保留最新一条；若缺失则退回到 Mongo id。
+        const seen = new Set();
+        const latest = [];
+        for (const d of drafts || []) {
+            const localId = String(d?.projectData?.meta?.id || '').trim();
+            const key = localId || String(d?._id || '').trim();
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            latest.push(d);
+        }
+
+        const output = (latest || []).map((d) => {
+            const obj = d.toJSON ? d.toJSON() : d;
+            const meta = d?.projectData?.meta && typeof d.projectData.meta === 'object' ? d.projectData.meta : {};
+            const localId = String(meta?.id || '').trim();
+            const localTitle = String(meta?.title || '').trim();
+            // 不返回 projectData，避免响应过大
+            if (obj && typeof obj === 'object') delete obj.projectData;
+            return {
+                ...obj,
+                editorMeta: {
+                    id: localId,
+                    title: localTitle,
+                },
+            };
+        });
+
+        res.json(output);
     } catch (err) {
         res.status(500).json({ message: 'Error' });
     }

@@ -69,6 +69,47 @@ const userCoverStyle = (cover) => {
   return { background: c };
 };
 
+const normalizedDrafts = computed(() => {
+  const list = Array.isArray(draftProjects.value) ? draftProjects.value : [];
+  const seen = new Map();
+  for (const p of list) {
+    const localId = String(p?.editorMeta?.id || '').trim();
+    const key = localId || String(p?.id || '').trim();
+    if (!key) continue;
+    const prev = seen.get(key);
+    if (!prev) {
+      seen.set(key, p);
+      continue;
+    }
+    const prevTime = new Date(prev?.updatedAt || prev?.createdAt || 0).getTime() || 0;
+    const nextTime = new Date(p?.updatedAt || p?.createdAt || 0).getTime() || 0;
+    if (nextTime >= prevTime) seen.set(key, p);
+  }
+  const unique = Array.from(seen.values());
+  unique.sort((a, b) => {
+    const ta = new Date(a?.updatedAt || a?.createdAt || 0).getTime() || 0;
+    const tb = new Date(b?.updatedAt || b?.createdAt || 0).getTime() || 0;
+    return tb - ta;
+  });
+  return unique;
+});
+
+const DRAFT_MAP_KEY = 'studio:draftMap';
+const removeDraftMapId = (localId) => {
+  const lid = String(localId || '').trim();
+  if (!lid) return;
+  try {
+    const raw = localStorage.getItem(DRAFT_MAP_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== 'object') return;
+    if (!(lid in parsed)) return;
+    delete parsed[lid];
+    localStorage.setItem(DRAFT_MAP_KEY, JSON.stringify(parsed));
+  } catch {
+    // ignore
+  }
+};
+
 const fetchRelationship = async () => {
   relationship.value = { isFollowing: false, isBlocked: false, hasBlockedMe: false, isSelf: Boolean(isSelf.value) };
   if (!user.value || !userId.value || isSelf.value) return;
@@ -260,21 +301,27 @@ const deleteDraft = async (p) => {
   const id = String(p?.id || '').trim();
   if (!id) return;
   if (!window.confirm('确定删除该草稿吗？')) return;
+  const localId = String(p?.editorMeta?.id || '').trim();
   try {
     const res = await authFetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
     const data = res.ok ? await res.json() : null;
     if (!res.ok) throw new Error(data?.message || '删除失败');
     draftProjects.value = (draftProjects.value || []).filter((it) => String(it?.id || '') !== id);
     try {
+      if (localId) {
+        removeProjectDraft(localId);
+        removeDraftMapId(localId);
+      }
       removeProjectDraft(id);
       const lastKey = 'studio:lastProjectId';
       const snapKey = 'studio:lastSnapshot';
       const last = String(localStorage.getItem(lastKey) || '').trim();
-      if (last === id) localStorage.removeItem(lastKey);
+      if (last === id || (localId && last === localId)) localStorage.removeItem(lastKey);
       const snapRaw = localStorage.getItem(snapKey);
       if (snapRaw) {
         const snap = JSON.parse(snapRaw);
-        if (String(snap?.id || '').trim() === id) localStorage.removeItem(snapKey);
+        const sid = String(snap?.id || '').trim();
+        if (sid === id || (localId && sid === localId)) localStorage.removeItem(snapKey);
       }
     } catch {
       // ignore local cleanup
@@ -288,14 +335,28 @@ const renameDraft = async (p) => {
   if (!isSelf.value) return;
   const id = String(p?.id || '').trim();
   if (!id) return;
-  const next = window.prompt('输入新的草稿名称', String(p?.title || ''));
+  const next = window.prompt('输入新的草稿名称', String(p?.editorMeta?.title || p?.title || ''));
   if (next == null) return;
   const title = String(next || '').trim();
   if (!title) return;
   try {
-    await apiUpdateProjectDraft(id, { title });
+    let patched = null;
+    try {
+      const data = await apiGetProjectSource(id);
+      const payload = data?.project || null;
+      if (payload && typeof payload === 'object') {
+        const meta = payload?.meta && typeof payload.meta === 'object' ? payload.meta : {};
+        patched = { ...payload, meta: { ...meta, title } };
+      }
+    } catch {
+      patched = null;
+    }
+
+    await apiUpdateProjectDraft(id, patched ? { title, project: patched } : { title });
     draftProjects.value = (draftProjects.value || []).map((it) =>
-      String(it?.id || '') === id ? { ...it, title } : it
+      String(it?.id || '') === id
+        ? { ...it, title, editorMeta: { ...(it?.editorMeta || {}), title } }
+        : it
     );
   } catch (e) {
     alert(e?.message || '重命名失败');
@@ -310,9 +371,19 @@ const duplicateDraft = async (p) => {
     const data = await apiGetProjectSource(id);
     const payload = data?.project || null;
     if (!payload) throw new Error('草稿内容为空');
-    const title = String(p?.title || '未命名草稿').trim();
-    const created = await apiCreateProjectDraft({ project: payload, title: `${title}（副本）` });
-    if (created) draftProjects.value = [created, ...(draftProjects.value || [])];
+    const baseTitle = String(p?.editorMeta?.title || p?.title || '未命名草稿').trim() || '未命名草稿';
+    const newTitle = `${baseTitle}（副本）`;
+    const newLocalId = `proj_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
+    const meta = payload?.meta && typeof payload.meta === 'object' ? payload.meta : {};
+    const nextPayload = { ...payload, meta: { ...meta, id: newLocalId, title: newTitle } };
+    const created = await apiCreateProjectDraft({ project: nextPayload, title: newTitle });
+    if (created) {
+      const next = {
+        ...created,
+        editorMeta: { id: newLocalId, title: newTitle },
+      };
+      draftProjects.value = [next, ...(draftProjects.value || [])];
+    }
   } catch (e) {
     alert(e?.message || '复制失败');
   }
@@ -598,13 +669,13 @@ watch(
           <div class="glass-card rounded-2xl border border-white/70 overflow-hidden">
             <div class="px-4 sm:px-6 py-4 border-b border-slate-200/70 bg-white/40 flex items-center justify-between">
               <div class="text-sm font-extrabold text-slate-900">草稿工程</div>
-              <div class="text-xs text-slate-500 font-semibold">共 {{ draftProjects.length }} 个</div>
+              <div class="text-xs text-slate-500 font-semibold">共 {{ normalizedDrafts.length }} 个</div>
             </div>
 
-            <div v-if="draftProjects.length" class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div v-if="normalizedDrafts.length" class="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               <div
-                v-for="p in draftProjects"
-                :key="p.id"
+                v-for="p in normalizedDrafts"
+                :key="String(p?.editorMeta?.id || p?.id || '')"
                 role="button"
                 tabindex="0"
                 class="glass-card rounded-2xl border border-white/70 overflow-hidden text-left hover:shadow-lg transition relative cursor-pointer"
@@ -640,10 +711,15 @@ watch(
                 </div>
                 <div class="h-32" :style="coverStyle(p.cover)"></div>
                 <div class="p-4">
-                  <div class="font-extrabold text-slate-900 truncate">{{ p.title || '未命名草稿' }}</div>
-                  <div class="mt-2 flex items-center justify-between text-[11px] text-slate-500 font-semibold">
-                    <span>{{ p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '' }}</span>
-                    <span class="inline-flex items-center gap-1"><i class="ph-bold ph-pencil"></i>草稿</span>
+                  <div class="font-extrabold text-slate-900 truncate">{{ p.editorMeta?.title || p.title || '未命名草稿' }}</div>
+                  <div class="mt-2 space-y-1 text-[11px] text-slate-500 font-semibold">
+                    <div class="flex items-center justify-between gap-2">
+                      <span>{{ p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '' }}</span>
+                      <span class="inline-flex items-center gap-1"><i class="ph-bold ph-pencil"></i>最新状态</span>
+                    </div>
+                    <div class="font-mono truncate">工程名称：{{ p.editorMeta?.title || p.title || '未命名草稿' }}</div>
+                    <div class="font-mono truncate">工程ID：{{ p.id }}</div>
+                    <div v-if="p.editorMeta?.id" class="font-mono truncate">工程本地ID：{{ p.editorMeta.id }}</div>
                   </div>
                 </div>
               </div>
