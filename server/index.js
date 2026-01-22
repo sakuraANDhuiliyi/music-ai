@@ -9,6 +9,7 @@ import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import jwt from 'jsonwebtoken'; // [新增]
+import { Chord, Note } from '@tonaljs/tonal';
 import User from './models/User.js';
 import Project from './models/Project.js';
 import Post from './models/Post.js';
@@ -30,6 +31,7 @@ const SERVER_CONFIG = {
     musicApiBase: process.env.MUSIC_API_BASE || 'http://mrzym.top:3000',
     musicApiBases: process.env.MUSIC_API_BASES || '',
     musicProxyTimeoutMs: Number(process.env.MUSIC_PROXY_TIMEOUT_MS || 25000),
+    chordServiceUrl: process.env.AI_CHORD_SERVICE_URL || '',
     ai: {
         apiKey: process.env.AI_API_KEY || '',
         model: process.env.AI_MODEL || 'glm-4.6',
@@ -43,6 +45,7 @@ const SERVER_CONFIG = {
 const AI_API_KEY = SERVER_CONFIG.ai.apiKey;
 const AI_MODEL = SERVER_CONFIG.ai.model;
 const AI_API_BASE = SERVER_CONFIG.ai.base;
+const CHORD_SERVICE_URL = String(SERVER_CONFIG.chordServiceUrl || '').trim();
 const MUSIC_API_BASE = SERVER_CONFIG.musicApiBase;
 const MUSIC_API_BASES = String(SERVER_CONFIG.musicApiBases || '')
     .split(',')
@@ -273,6 +276,154 @@ const SYSTEM_PROMPT_AI_CHORD_CREATOR = `你是一名专业编曲助手。你的�
 
 const SYSTEM_PROMPT_AI_SONG_CREATOR = `你是一名专业编曲助手。你的任务：根据用户输入，一次性生成“和弦进行 + 旋律（单声部）”，并组织成更像完整歌曲的结构（例如 A 段 / B 段 / 副歌）。用于一首没有人声的简短器乐作品。\n\n输出必须是严格 JSON（只能输出 JSON，不能输出任何解释文字），并且能被 JSON.parse() 直接解析。\n\nJSON 格式（支持时）：\n{\n  "type": "song",\n  "bpm": 120,\n  "key": "C",\n  "scale": "major",\n  "genre": "R&B",\n  "chordBeats": 4,\n  "structure": "A(Verse)-B(Chorus)-A(Verse)-B(Chorus)",\n  "sections": [\n    {\n      "name": "A",\n      "label": "Verse",\n      "bars": 8,\n      "chords": [ ["C4","E4","G4"], ["A3","C4","E4"] ],\n      "melody": [ {"note":"E5","durBeats":1}, {"note":"REST","durBeats":1} ]\n    },\n    {\n      "name": "B",\n      "label": "Chorus",\n      "bars": 8,\n      "chords": [ ... ],\n      "melody": [ ... ]\n    }\n  ],\n  "desc": "一句简短说明（可选）"\n}\n\n规则：\n- sections 必须至少包含 2 段（例如 A 和 B），可包含副歌（Chorus）、过渡（Bridge）等。\n- 每段的 bars 为正整数，通常 4/8/16。\n- 每段 chords 是二维数组：每个和弦 3~6 个音符；注意声部进行更平滑。\n- 每段 melody 是一维数组：按时间顺序的旋律音符；note 为音符字符串或 REST（休止）。\n- note 音符必须使用格式：音名(A-G)+可选#或b+八度数字，例如 C4, Eb4, F#3。\n- durBeats 为正数（建议 0.5 / 1 / 2 / 4）；每段 melody 的 durBeats 总和应与该段 chords.length * chordBeats 大致一致（允许少量偏差）。\n- bpm 为 40~240 的整数。\n\n不支持时：\n{ "type": "NOT_SUPPORT", "value": null, "desc": "不支持原因" }\n\n始终只输出 JSON。`;
 
+const CHORD_STYLE_ALLOWLIST = new Set([
+    'alternative',
+    'country',
+    'electronic',
+    'jazz',
+    'metal',
+    'pop rock',
+    'pop',
+    'punk',
+    'rap',
+    'reggae',
+    'rock',
+    'soul',
+]);
+
+const normalizeChordStyle = (rawGenre, rawPrompt) => {
+    const genre = String(rawGenre || '').trim().toLowerCase();
+    if (CHORD_STYLE_ALLOWLIST.has(genre)) return genre;
+    const prompt = String(rawPrompt || '').toLowerCase();
+    if (prompt.includes('jazz')) return 'jazz';
+    if (prompt.includes('rock')) return 'rock';
+    if (prompt.includes('metal')) return 'metal';
+    if (prompt.includes('punk')) return 'punk';
+    if (prompt.includes('reggae')) return 'reggae';
+    if (prompt.includes('rap') || prompt.includes('hiphop') || prompt.includes('hip-hop')) return 'rap';
+    if (prompt.includes('electronic') || prompt.includes('edm')) return 'electronic';
+    if (prompt.includes('country')) return 'country';
+    if (prompt.includes('soul') || prompt.includes('r&b')) return 'soul';
+    if (prompt.includes('alternative')) return 'alternative';
+    if (prompt.includes('pop rock')) return 'pop rock';
+    return 'pop';
+};
+
+const normalizeChordSymbol = (symbol) => {
+    let s = String(symbol || '').trim();
+    if (!s) return '';
+    s = s.replace(/us([24])/g, 'sus$1');
+    s = s.replace(/([A-G])s(?!u)/g, '$1#');
+    s = s.replace(/majjs/gi, 'maj');
+    return s;
+};
+
+const NOTE_PC = Object.freeze({
+    C: 0,
+    'C#': 1,
+    Db: 1,
+    D: 2,
+    'D#': 3,
+    Eb: 3,
+    E: 4,
+    F: 5,
+    'F#': 6,
+    Gb: 6,
+    G: 7,
+    'G#': 8,
+    Ab: 8,
+    A: 9,
+    'A#': 10,
+    Bb: 10,
+    B: 11,
+});
+const PC_TO_NAME = Object.freeze(['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']);
+
+const fallbackTriadNotes = (symbol) => {
+    const m = String(symbol || '').match(/^([A-G])([#b]?)/i);
+    if (!m) return [];
+    const rootName = `${m[1].toUpperCase()}${m[2] || ''}`;
+    const pc = NOTE_PC[rootName];
+    if (pc == null) return [];
+    const lower = String(symbol || '').toLowerCase();
+    const isMinor = /(^|[^a-z])m(?!aj)/.test(lower) || lower.includes('min');
+    const intervals = isMinor ? [0, 3, 7] : [0, 4, 7];
+    return intervals.map((i) => PC_TO_NAME[(pc + i) % 12]);
+};
+
+const withChordOctaves = (pcs, bassPc) => {
+    const list = Array.isArray(pcs) ? pcs.filter(Boolean) : [];
+    if (!list.length) return [];
+    const norm = list.map((n) => Note.pitchClass(n) || n);
+    let ordered = norm;
+    if (bassPc) {
+        const b = Note.pitchClass(bassPc) || bassPc;
+        ordered = [b, ...norm.filter((n) => Note.pitchClass(n) !== b)];
+    }
+    return ordered.slice(0, 6).map((n, idx) => `${Note.pitchClass(n) || n}${idx === 0 ? 3 : 4}`);
+};
+
+const chordSymbolToNotes = (symbol) => {
+    const normalized = normalizeChordSymbol(symbol);
+    if (!normalized) return [];
+    const parts = normalized.split('/');
+    const bass = parts.length > 1 ? parts[1] : '';
+    const chord = Chord.get(normalized);
+    const notes = Array.isArray(chord?.notes) && chord.notes.length ? chord.notes : fallbackTriadNotes(normalized);
+    if (!notes.length) return [];
+    return withChordOctaves(notes, bass);
+};
+
+const extractChordSymbolsFromTokens = (tokens, maxBars) => {
+    const list = Array.isArray(tokens) ? tokens : [];
+    const out = [];
+    let bars = 0;
+    const limitBars = Number.isFinite(maxBars) ? Math.max(1, Math.min(128, Math.floor(maxBars))) : null;
+    for (const t of list) {
+        if (t === '<BAR>') {
+            bars += 1;
+            if (limitBars && bars >= limitBars) break;
+            continue;
+        }
+        if (typeof t === 'string' && t.startsWith('<') && t.endsWith('>')) continue;
+        const sym = String(t || '').trim();
+        if (sym) out.push(sym);
+    }
+    return out;
+};
+
+const generateFromChordService = async ({ prompt, genre, seed, bars }) => {
+    if (!CHORD_SERVICE_URL) throw new Error('AI_CHORD_SERVICE_URL 未配置');
+    const style = normalizeChordStyle(genre, prompt);
+    const seedNum = Number.isFinite(seed)
+        ? Math.floor(seed)
+        : Math.abs([...String(prompt || '')].reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 10000) + 1;
+
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 25000);
+    try {
+        const resp = await fetch(`${CHORD_SERVICE_URL.replace(/\/$/, '')}/generate_chords`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ style, seed: seedNum }),
+            signal: ctrl.signal,
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) {
+            const msg = data?.message || data?.detail || 'Chord service error';
+            throw new Error(msg);
+        }
+        const tokens = Array.isArray(data?.tokens) ? data.tokens : [];
+        const chordSymbols = extractChordSymbolsFromTokens(tokens, bars);
+        const chords = chordSymbols
+            .map((s) => chordSymbolToNotes(s))
+            .filter((notes) => Array.isArray(notes) && notes.length > 0);
+        return { chords, style, rawTokens: tokens };
+    } finally {
+        clearTimeout(timeout);
+    }
+};
+
 app.post('/api/ai-creator', async (req, res) => {
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -288,6 +439,37 @@ app.post('/api/ai-creator', async (req, res) => {
     const bpm = Number(req.body?.bpm);
     const bars = Number(req.body?.bars);
     const structure = String(req.body?.structure || '').trim();
+    const seed = Number(req.body?.seed);
+
+    const useLocalChordModel = Boolean(CHORD_SERVICE_URL) && mode === 'chords';
+
+    if (useLocalChordModel) {
+        if (!prompt) {
+            writeSse(res, { type: 'error', message: 'prompt 不能为空' });
+            return res.end();
+        }
+        writeSse(res, { type: 'start', message: '正在调用本地和弦模型...' });
+        try {
+            writeSse(res, { type: 'progress', message: '生成中...' });
+            const { chords, style } = await generateFromChordService({ prompt, genre, seed, bars });
+            if (!chords.length) {
+                writeSse(res, { type: 'result', data: { type: 'NOT_SUPPORT', value: null, desc: '模型未生成有效和弦' } });
+                return res.end();
+            }
+            writeSse(res, {
+                type: 'result',
+                data: {
+                    type: 'chord',
+                    value: chords,
+                    desc: `本地和弦模型（style: ${style}）`,
+                },
+            });
+            return res.end();
+        } catch (err) {
+            writeSse(res, { type: 'error', message: '本地和弦模型调用失败', details: err?.message || String(err) });
+            return res.end();
+        }
+    }
 
     if (!AI_API_KEY) {
         writeSse(res, { type: 'error', message: '服务端未配置 AI_API_KEY' });

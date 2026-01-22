@@ -12,6 +12,7 @@
     "cleanup:netease": "node tools/cleanup-netease.mjs"
   },
   "dependencies": {
+    "@tonaljs/tonal": "^4.10.0",
     "axios": "^1.13.2",
     "body-parser": "^2.2.1",
     "cors": "^2.8.5",

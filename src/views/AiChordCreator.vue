@@ -6,7 +6,7 @@ import { postSSE } from '../utils/ssePost.js';
 import { apiUrl, API_ENDPOINTS } from '../config/appConfig.js';
 import { identifyChordName } from '../utils/chordIdentify.js';
 import { addAiChordCollection, getAiChordCollectionById, updateAiChordCollection } from '../utils/aiChordStorage.js';
-import { playChordNotes, playMelody, playProgression } from '../utils/chordPlayer.js';
+import { playChordNotes, playMelody, playProgression, stopPlayback } from '../utils/chordPlayer.js';
 import { authFetch } from '../composables/useUser.js';
 import { PROMPT_TEMPLATE_SCOPES } from '../config/promptTemplates.js';
 import { loadPromptTemplates, saveCustomPromptTemplates } from '../utils/promptTemplateStore.js';
@@ -35,6 +35,7 @@ const editableChords = ref([]);
 const editableMelody = ref([]);
 const bpm = ref(120);
 const chordBeats = ref(4);
+const isPreviewPlaying = ref(false);
 
 const songMeta = ref({ genre: '', key: '', scale: '', structure: '' });
 const songSections = ref([]);
@@ -784,19 +785,35 @@ const playOne = async (block) => {
 
 const playAll = async () => {
   const playable = (editableChords.value || []).filter((c) => Array.isArray(c?.notes) && c.notes.length > 0);
+  if (!playable.length) return;
   const perChordSec = (60 / Math.max(40, Math.min(240, Number(bpm.value) || 120))) * (Number(chordBeats.value) || 4);
-  if (editableMelody.value?.length) {
-    await Promise.all([
-      playProgression(playable, Math.max(0.2, perChordSec)),
-      playMelody(editableMelody.value, bpm.value),
-    ]);
-  } else {
-    await playProgression(playable, Math.max(0.2, perChordSec));
+  isPreviewPlaying.value = true;
+  try {
+    if (editableMelody.value?.length) {
+      await Promise.all([
+        playProgression(playable, Math.max(0.2, perChordSec)),
+        playMelody(editableMelody.value, bpm.value),
+      ]);
+    } else {
+      await playProgression(playable, Math.max(0.2, perChordSec));
+    }
+  } finally {
+    isPreviewPlaying.value = false;
   }
+};
+
+const togglePreviewPlayback = async () => {
+  if (isPreviewPlaying.value) {
+    stopPlayback();
+    isPreviewPlaying.value = false;
+    return;
+  }
+  await playAll();
 };
 
 onBeforeUnmount(() => {
   abortController.value?.abort?.();
+  stopPlayback();
 });
 
 const loadEditTarget = async () => {
@@ -1050,8 +1067,9 @@ onMounted(() => {
             <div class="flex items-center justify-between">
               <div class="text-sm font-semibold text-slate-700">预览</div>
               <div class="flex items-center gap-2">
-                <UiButton @click="playAll" variant="ghost" class="px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
-                  <i class="ph-fill ph-play"></i> 播放
+                <UiButton @click="togglePreviewPlayback" variant="ghost" class="px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
+                  <i :class="isPreviewPlaying ? 'ph-fill ph-stop' : 'ph-fill ph-play'"></i>
+                  {{ isPreviewPlaying ? '停止' : '播放' }}
                 </UiButton>
                 <UiButton @click="handleImport" variant="primary" class="text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2">
                   <i class="ph-bold ph-check"></i> {{ isEditMode ? '保存修改' : '导入到素材库' }}
