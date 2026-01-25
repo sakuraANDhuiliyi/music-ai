@@ -9,6 +9,8 @@ import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import jwt from 'jsonwebtoken'; // [新增]
+import crypto from 'crypto';
+import WebSocket from 'ws';
 import { Chord, Note } from '@tonaljs/tonal';
 import User from './models/User.js';
 import Project from './models/Project.js';
@@ -37,6 +39,13 @@ const SERVER_CONFIG = {
         model: process.env.AI_MODEL || 'glm-4.6',
         base: process.env.AI_API_BASE || '',
     },
+    spark: {
+        appId: process.env.SPARK_APP_ID || '',
+        apiKey: process.env.SPARK_API_KEY || '',
+        apiSecret: process.env.SPARK_API_SECRET || '',
+        endpoint: process.env.SPARK_API_ENDPOINT || 'wss://spark-api.xf-yun.com/v1/x1',
+        domain: process.env.SPARK_DOMAIN || 'spark-x',
+    },
     telemetry: {
         enabled: String(process.env.CLIENT_ERROR_LOGGING ?? 'true') !== 'false',
     },
@@ -45,6 +54,7 @@ const SERVER_CONFIG = {
 const AI_API_KEY = SERVER_CONFIG.ai.apiKey;
 const AI_MODEL = SERVER_CONFIG.ai.model;
 const AI_API_BASE = SERVER_CONFIG.ai.base;
+const SPARK_CONFIG = SERVER_CONFIG.spark;
 const CHORD_SERVICE_URL = String(SERVER_CONFIG.chordServiceUrl || '').trim();
 const MUSIC_API_BASE = SERVER_CONFIG.musicApiBase;
 const MUSIC_API_BASES = String(SERVER_CONFIG.musicApiBases || '')
@@ -158,6 +168,247 @@ const validateImageDimensions = async (filePath, opts = {}) => {
     return { ok: true, width: w, height: h };
 };
 
+const hasSparkConfig = () =>
+    Boolean(SPARK_CONFIG?.appId && SPARK_CONFIG?.apiKey && SPARK_CONFIG?.apiSecret && SPARK_CONFIG?.endpoint);
+
+const buildSparkWsUrl = () => {
+    const endpoint = String(SPARK_CONFIG.endpoint || '').trim();
+    const url = new URL(endpoint);
+    const host = url.host;
+    const path = url.pathname;
+    const date = new Date().toUTCString();
+    const signatureOrigin = `host: ${host}\ndate: ${date}\nGET ${path} HTTP/1.1`;
+    const signatureSha = crypto.createHmac('sha256', SPARK_CONFIG.apiSecret).update(signatureOrigin).digest('base64');
+    const authorizationOrigin = `api_key="${SPARK_CONFIG.apiKey}", algorithm="hmac-sha256", headers="host date request-line", signature="${signatureSha}"`;
+    const authorization = Buffer.from(authorizationOrigin).toString('base64');
+    url.searchParams.set('authorization', authorization);
+    url.searchParams.set('date', date);
+    url.searchParams.set('host', host);
+    return url.toString();
+};
+
+const sparkChatOnce = async ({ messages, temperature = 0.6, maxTokens = 4096, thinkingType = 'disabled' } = {}) => {
+    if (!hasSparkConfig()) throw new Error('Spark 配置未完整提供');
+    const wsUrl = buildSparkWsUrl();
+    const payload = {
+        header: {
+            app_id: SPARK_CONFIG.appId,
+            uid: `u_${Date.now().toString(36)}`,
+        },
+        payload: {
+            message: {
+                text: (Array.isArray(messages) ? messages : [])
+                    .map((m) => ({
+                        role: String(m?.role || '').trim(),
+                        content: String(m?.content || '').trim(),
+                    }))
+                    .filter((m) => ['system', 'user', 'assistant'].includes(m.role) && m.content)
+                    .slice(0, 40),
+            },
+        },
+        parameter: {
+            chat: {
+                domain: String(SPARK_CONFIG.domain || 'spark-x'),
+                temperature: Math.max(0, Math.min(2, Number(temperature) || 0.6)),
+                max_tokens: Math.max(1, Math.min(65535, Number(maxTokens) || 4096)),
+                top_k: 5,
+                presence_penalty: 1,
+                frequency_penalty: 0.02,
+                thinking: { type: String(thinkingType || 'disabled') },
+            },
+        },
+    };
+
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        let done = false;
+        let content = '';
+        let reasoning = '';
+
+        const timeout = setTimeout(() => {
+            if (done) return;
+            done = true;
+            try { ws.close(); } catch { }
+            reject(new Error('Spark 请求超时'));
+        }, 30000);
+
+        ws.on('open', () => {
+            ws.send(JSON.stringify(payload));
+        });
+
+        ws.on('message', (data) => {
+            if (done) return;
+            try {
+                const json = JSON.parse(String(data || ''));
+                const code = Number(json?.header?.code ?? 0);
+                if (code !== 0) {
+                    done = true;
+                    clearTimeout(timeout);
+                    try { ws.close(); } catch { }
+                    return reject(new Error(json?.header?.message || `Spark error: ${code}`));
+                }
+
+                const choice = json?.payload?.choices?.text?.[0];
+                const rPiece = String(choice?.reasoning_content || '');
+                const piece = String(choice?.content || '');
+                if (rPiece) reasoning += rPiece;
+                if (piece) content += piece;
+
+                const status = Number(json?.payload?.choices?.status ?? json?.header?.status ?? 0);
+                if (status === 2) {
+                    done = true;
+                    clearTimeout(timeout);
+                    try { ws.close(); } catch { }
+                    return resolve({ content, reasoning });
+                }
+            } catch (e) {
+                done = true;
+                clearTimeout(timeout);
+                try { ws.close(); } catch { }
+                reject(e);
+            }
+        });
+
+        ws.on('error', (err) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            reject(err);
+        });
+
+        ws.on('close', () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            resolve({ content, reasoning });
+        });
+    });
+};
+
+const sparkChatStream = async ({
+    messages,
+    temperature = 0.6,
+    maxTokens = 4096,
+    thinkingType = 'disabled',
+    onDelta,
+    signal,
+} = {}) => {
+    if (!hasSparkConfig()) throw new Error('Spark 配置未完整提供');
+    const wsUrl = buildSparkWsUrl();
+    const payload = {
+        header: {
+            app_id: SPARK_CONFIG.appId,
+            uid: `u_${Date.now().toString(36)}`,
+        },
+        payload: {
+            message: {
+                text: (Array.isArray(messages) ? messages : [])
+                    .map((m) => ({
+                        role: String(m?.role || '').trim(),
+                        content: String(m?.content || '').trim(),
+                    }))
+                    .filter((m) => ['system', 'user', 'assistant'].includes(m.role) && m.content)
+                    .slice(0, 40),
+            },
+        },
+        parameter: {
+            chat: {
+                domain: String(SPARK_CONFIG.domain || 'spark-x'),
+                temperature: Math.max(0, Math.min(2, Number(temperature) || 0.6)),
+                max_tokens: Math.max(1, Math.min(65535, Number(maxTokens) || 4096)),
+                top_k: 5,
+                presence_penalty: 1,
+                frequency_penalty: 0.02,
+                thinking: { type: String(thinkingType || 'disabled') },
+            },
+        },
+    };
+
+    return new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl);
+        let done = false;
+        let content = '';
+
+        const cleanup = () => {
+            try { ws.close(); } catch { }
+        };
+
+        const timeout = setTimeout(() => {
+            if (done) return;
+            done = true;
+            cleanup();
+            reject(new Error('Spark 请求超时'));
+        }, 30000);
+
+        const onAbort = () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            cleanup();
+            reject(new Error('请求已取消'));
+        };
+
+        if (signal) {
+            if (signal.aborted) return onAbort();
+            signal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        ws.on('open', () => {
+            ws.send(JSON.stringify(payload));
+        });
+
+        ws.on('message', (data) => {
+            if (done) return;
+            try {
+                const json = JSON.parse(String(data || ''));
+                const code = Number(json?.header?.code ?? 0);
+                if (code !== 0) {
+                    done = true;
+                    clearTimeout(timeout);
+                    cleanup();
+                    return reject(new Error(json?.header?.message || `Spark error: ${code}`));
+                }
+
+                const choice = json?.payload?.choices?.text?.[0];
+                const piece = String(choice?.content || '');
+                if (piece) {
+                    content += piece;
+                    onDelta?.(piece, content);
+                }
+
+                const status = Number(json?.payload?.choices?.status ?? json?.header?.status ?? 0);
+                if (status === 2) {
+                    done = true;
+                    clearTimeout(timeout);
+                    cleanup();
+                    const finalText = content || String(choice?.reasoning_content || '');
+                    return resolve(finalText);
+                }
+            } catch (e) {
+                done = true;
+                clearTimeout(timeout);
+                cleanup();
+                reject(e);
+            }
+        });
+
+        ws.on('error', (err) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            cleanup();
+            reject(err);
+        });
+
+        ws.on('close', () => {
+            if (done) return;
+            done = true;
+            clearTimeout(timeout);
+            resolve(content);
+        });
+    });
+};
+
 const buildItemPatchFromPayload = (raw) => {
     const payload = raw && typeof raw === 'object' ? raw : {};
     const patch = {};
@@ -249,6 +500,83 @@ app.post('/api/telemetry/client-error', (req, res) => {
         ts: payload?.ts,
     });
     res.json({ ok: true });
+});
+
+// ==========================================
+//  🤖 AI Assistant: 通用问答
+//  - POST /api/ai-assistant
+//  - body: { messages?: [{role, content}], prompt?: string, systemPrompt?: string, temperature?: number, provider?: 'glm'|'spark' }
+// ==========================================
+app.post('/api/ai-assistant', async (req, res) => {
+    try {
+        const payload = req.body || {};
+        const provider = String(payload.provider || 'glm').trim();
+        const rawMessages = Array.isArray(payload.messages) ? payload.messages : [];
+        const prompt = String(payload.prompt || '').trim();
+        const systemPrompt = String(payload.systemPrompt || '').trim();
+        const thinkingType = String(payload.thinkingType || 'disabled').trim();
+        const temperature = Number.isFinite(Number(payload.temperature))
+            ? Math.max(0, Math.min(1.2, Number(payload.temperature)))
+            : 0.6;
+
+        const messages = [];
+        if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+
+        rawMessages
+            .filter((m) => m && typeof m === 'object')
+            .map((m) => ({
+                role: String(m.role || '').trim(),
+                content: String(m.content || '').trim(),
+            }))
+            .filter((m) => ['user', 'assistant', 'system'].includes(m.role) && m.content)
+            .slice(-20)
+            .forEach((m) => messages.push(m));
+
+        if (!messages.length && prompt) {
+            messages.push({ role: 'user', content: prompt });
+        }
+
+        if (!messages.length) {
+            return res.status(400).json({ message: '缺少有效的 messages 或 prompt' });
+        }
+
+        if (provider === 'spark') {
+            if (!hasSparkConfig()) return res.status(500).json({ message: 'Spark 配置未完成' });
+            const result = await sparkChatOnce({ messages, temperature, maxTokens: 4096, thinkingType });
+            const reply = String(result?.content || '').trim();
+            const reasoning = String(result?.reasoning || '').trim();
+            return res.json({ ok: true, reply, reasoning, model: 'spark-x1.5' });
+        }
+
+        if (!AI_API_KEY) return res.status(500).json({ message: 'AI_API_KEY 未配置' });
+        const apiBase = String(process.env.AI_API_BASE || 'https://open.bigmodel.cn/api/paas/v4/chat/completions').trim();
+        const resp = await fetch(apiBase, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${AI_API_KEY}`,
+            },
+            body: JSON.stringify({
+                model: AI_MODEL,
+                messages,
+                temperature,
+                stream: false,
+            }),
+        });
+
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) {
+            return res.status(resp.status).json({
+                message: data?.message || 'AI 接口请求失败',
+                detail: data || null,
+            });
+        }
+
+        const reply = data?.choices?.[0]?.message?.content || '';
+        return res.json({ ok: true, reply, model: AI_MODEL });
+    } catch (e) {
+        return res.status(500).json({ message: 'AI 助手调用失败', detail: String(e?.message || e) });
+    }
 });
 
 // ==========================================
@@ -424,6 +752,45 @@ const generateFromChordService = async ({ prompt, genre, seed, bars }) => {
     }
 };
 
+const normalizeRomanKey = (rawKey) => {
+    const m = String(rawKey || '').trim().match(/([A-Ga-g])([#b]?)/);
+    if (!m) return 'C';
+    return `${m[1].toUpperCase()}${m[2] || ''}`;
+};
+
+const generateFromRomanService = async ({ prompt, genre, seed, key }) => {
+    if (!CHORD_SERVICE_URL) throw new Error('AI_CHORD_SERVICE_URL 未配置');
+    const style = normalizeChordStyle(genre, prompt);
+    const seedNum = Number.isFinite(seed)
+        ? Math.floor(seed)
+        : Math.abs([...String(prompt || '')].reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 10000) + 1;
+    const keySig = normalizeRomanKey(key);
+
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 25000);
+    try {
+        const resp = await fetch(`${CHORD_SERVICE_URL.replace(/\/$/, '')}/generate_roman`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ style, seed: seedNum, key: keySig }),
+            signal: ctrl.signal,
+        });
+        const data = await resp.json().catch(() => null);
+        if (!resp.ok) {
+            const msg = data?.message || data?.detail || 'Roman service error';
+            throw new Error(msg);
+        }
+        const chordSymbols = Array.isArray(data?.chords) ? data.chords : [];
+        const filteredSymbols = chordSymbols.filter((t) => !(typeof t === 'string' && t.startsWith('<') && t.endsWith('>')));
+        const chords = filteredSymbols
+            .map((s) => chordSymbolToNotes(s))
+            .filter((notes) => Array.isArray(notes) && notes.length > 0);
+        return { chords, style, key: keySig, romanTokens: data?.roman || [] };
+    } finally {
+        clearTimeout(timeout);
+    }
+};
+
 app.post('/api/ai-creator', async (req, res) => {
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -440,10 +807,27 @@ app.post('/api/ai-creator', async (req, res) => {
     const bars = Number(req.body?.bars);
     const structure = String(req.body?.structure || '').trim();
     const seed = Number(req.body?.seed);
+    const thinkingType = String(req.body?.thinkingType || 'disabled').trim();
 
-    const useLocalChordModel = Boolean(CHORD_SERVICE_URL) && mode === 'chords';
+    const providerRaw = String(req.body?.provider || '').trim();
+    const provider = providerRaw || 'auto';
+    const wantSong = mode === 'song';
+    const preferLocalChord = (provider === 'local-chord' || (provider === 'auto' && !wantSong)) && Boolean(CHORD_SERVICE_URL);
+    const preferLocalRoman = provider === 'local-roman' && Boolean(CHORD_SERVICE_URL);
+    const preferSpark = provider === 'spark';
+    const preferLlm = provider === 'llm' || (provider === 'auto' && wantSong);
 
-    if (useLocalChordModel) {
+    if ((provider === 'local-chord' || provider === 'local-roman') && !CHORD_SERVICE_URL) {
+        writeSse(res, { type: 'error', message: '未配置 AI_CHORD_SERVICE_URL，无法使用本地模型' });
+        return res.end();
+    }
+
+    if ((preferLocalChord || preferLocalRoman) && wantSong) {
+        writeSse(res, { type: 'error', message: '本地模型暂不支持旋律+和弦，请切换到大模型' });
+        return res.end();
+    }
+
+    if (preferLocalChord) {
         if (!prompt) {
             writeSse(res, { type: 'error', message: 'prompt 不能为空' });
             return res.end();
@@ -471,7 +855,39 @@ app.post('/api/ai-creator', async (req, res) => {
         }
     }
 
-    if (!AI_API_KEY) {
+    if (preferLocalRoman) {
+        if (!prompt) {
+            writeSse(res, { type: 'error', message: 'prompt 不能为空' });
+            return res.end();
+        }
+        writeSse(res, { type: 'start', message: '正在调用本地 Roman 模型...' });
+        try {
+            writeSse(res, { type: 'progress', message: '生成中...' });
+            const { chords, style, key: romanKey } = await generateFromRomanService({ prompt, genre, seed, key });
+            if (!chords.length) {
+                writeSse(res, { type: 'result', data: { type: 'NOT_SUPPORT', value: null, desc: '模型未生成有效和弦' } });
+                return res.end();
+            }
+            writeSse(res, {
+                type: 'result',
+                data: {
+                    type: 'chord',
+                    value: chords,
+                    desc: `本地 Roman 模型（style: ${style}, key: ${romanKey}）`,
+                },
+            });
+            return res.end();
+        } catch (err) {
+            writeSse(res, { type: 'error', message: '本地 Roman 模型调用失败', details: err?.message || String(err) });
+            return res.end();
+        }
+    }
+
+    if (preferSpark && !hasSparkConfig()) {
+        writeSse(res, { type: 'error', message: 'Spark 配置未完成，无法使用 Spark X1.5' });
+        return res.end();
+    }
+    if (!preferSpark && !AI_API_KEY) {
         writeSse(res, { type: 'error', message: '服务端未配置 AI_API_KEY' });
         return res.end();
     }
@@ -563,6 +979,18 @@ app.post('/api/ai-creator', async (req, res) => {
         return resp;
     };
 
+    const requestSparkContent = async ({ temperature, messages, onDelta, signal }) => {
+        const text = await sparkChatStream({
+            messages,
+            temperature: typeof temperature === 'number' ? temperature : 0.6,
+            maxTokens: 4096,
+            thinkingType,
+            onDelta,
+            signal,
+        });
+        return text;
+    };
+
     const buildRepairSystemPrompt = () => {
         const base = `你是一名“JSON 修复器”。你的任务：把用户提供的内容修复/改写为“严格 JSON”，要求：\n- 只能输出 JSON（禁止任何解释文字、markdown、代码块）。\n- 必须能被 JSON.parse() 直接解析（双引号、无多余逗号）。\n- 修复常见错误：缺失冒号/引号、错误字段名（例如 chords）、对象键为空、数组/对象括号不匹配。\n- 所有音符必须符合格式：音名(A-G)+可选#或b+八度数字，例如 C4, Eb4, F#3；休止用 REST。\n- durBeats 必须为正数。\n`;
         if (mode === 'song') {
@@ -587,6 +1015,12 @@ app.post('/api/ai-creator', async (req, res) => {
             },
         ];
 
+        if (preferSpark) {
+            const content = await requestSparkContent({ temperature: 0.2, messages: repairMessages });
+            if (!content) return null;
+            return parseAiCreatorJson(String(content));
+        }
+
         const repairResp = await requestAiOnce({ stream: false, temperature: 0.2, messages: repairMessages });
         if (!repairResp.ok) return null;
         const json = await repairResp.json().catch(() => null);
@@ -596,6 +1030,45 @@ app.post('/api/ai-creator', async (req, res) => {
     };
 
     try {
+        if (preferSpark) {
+            writeSse(res, { type: 'start', message: '正在调用 Spark X1.5...' });
+            writeSse(res, { type: 'progress', message: '生成中...' });
+            let lastEmitAt = 0;
+            const content = await requestSparkContent({
+                temperature: 0.7,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt },
+                ],
+                signal: abortController.signal,
+                onDelta: (_piece, full) => {
+                    const now = Date.now();
+                    if (now - lastEmitAt < 240) return;
+                    lastEmitAt = now;
+                    const snippet = String(full || '').slice(-120);
+                    if (snippet) {
+                        writeSse(res, { type: 'progress', message: `生成中… ${snippet}` });
+                    }
+                },
+            });
+
+            let parsed = parseAiCreatorJson(content);
+            if (!parsed) {
+                parsed = await tryRepairAiJson(content);
+            }
+            if (!parsed) {
+                writeSse(res, {
+                    type: 'error',
+                    message: 'AI 返回内容解析失败（不是严格 JSON），请重试或更换提示词/模型',
+                    details: String(content || '').slice(0, 800),
+                });
+                return res.end();
+            }
+
+            writeSse(res, { type: 'result', data: parsed });
+            return res.end();
+        }
+
         const resp = await requestAiOnce({
             stream: true,
             temperature: 0.8,

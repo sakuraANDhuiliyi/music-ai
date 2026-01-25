@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import UiButton from '../components/UiButton.vue';
 import { postSSE } from '../utils/ssePost.js';
@@ -24,6 +24,8 @@ const result = ref(null);
 const errorMsg = ref('');
 
 const withMelody = ref(true);
+const generationProvider = ref('auto');
+const sparkThinking = ref('disabled');
 
 const genre = ref('');
 const keySig = ref('');
@@ -39,6 +41,9 @@ const isPreviewPlaying = ref(false);
 
 const songMeta = ref({ genre: '', key: '', scale: '', structure: '' });
 const songSections = ref([]);
+const allowSong = computed(() =>
+  generationProvider.value === 'llm' || generationProvider.value === 'spark' || generationProvider.value === 'auto'
+);
 
 const abortController = ref(null);
 const sectionAbortController = ref(null);
@@ -590,6 +595,8 @@ const handleCreate = async () => {
       body: {
         prompt: prompt.value,
         mode: withMelody.value ? 'song' : 'chords',
+        provider: generationProvider.value,
+        thinkingType: generationProvider.value === 'spark' ? sparkThinking.value : undefined,
         genre: withMelody.value ? genre.value : undefined,
         bpm: withMelody.value ? bpm.value : undefined,
         key: withMelody.value ? keySig.value : undefined,
@@ -632,7 +639,11 @@ const handleCreate = async () => {
             isCreating.value = false;
             break;
           case 'too_many_requests':
-            streamMessage.value = payload.message || '当前服务繁忙，请稍后重试';
+            errorMsg.value = payload.message || '当前服务繁忙，请稍后重试';
+            streamMessage.value = '';
+            progress.value = 0;
+            isCreating.value = false;
+            abortController.value?.abort?.();
             break;
           case 'error':
             errorMsg.value = payload.message || '发生错误，可稍后重试';
@@ -641,7 +652,10 @@ const handleCreate = async () => {
               errorMsg.value += `\n${detailsText}`;
             }
             console.error('[AiChordCreator] server error event:', JSON.stringify(payload));
+            streamMessage.value = '';
+            progress.value = 0;
             isCreating.value = false;
+            abortController.value?.abort?.();
             break;
           default:
             break;
@@ -816,6 +830,12 @@ onBeforeUnmount(() => {
   stopPlayback();
 });
 
+watch(generationProvider, () => {
+  if (!allowSong.value) {
+    withMelody.value = false;
+  }
+});
+
 const loadEditTarget = async () => {
   if (!isEditMode.value) return;
 
@@ -977,11 +997,33 @@ onMounted(() => {
 
           <div class="flex flex-col md:flex-row md:items-center gap-3">
             <label class="inline-flex items-center gap-2 text-sm text-slate-700 font-semibold select-none">
-              <input v-model="withMelody" type="checkbox" class="accent-slate-900" :disabled="isCreating || isEditMode" />
+              <input v-model="withMelody" type="checkbox" class="accent-slate-900" :disabled="isCreating || isEditMode || !allowSong" />
               同时生成旋律（一次生成和弦+旋律）
             </label>
+            <div class="text-xs text-slate-500" v-if="!allowSong">仅大模型支持旋律</div>
             <div v-if="editableMelody.length" class="text-xs text-slate-500">
               BPM：{{ bpm }}，每个和弦：{{ chordBeats }} 拍
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <div class="text-xs text-slate-500 mb-1">生成模型</div>
+              <select v-model="generationProvider" class="w-full input-glass rounded-lg px-3 py-2 text-sm" :disabled="isCreating">
+                <option value="auto">自动（优先本地和弦模型）</option>
+                <option value="local-chord">本地和弦模型</option>
+                <option value="local-roman">本地 Roman 模型</option>
+                <option value="llm">大模型（云端）</option>
+                <option value="spark">Spark X1.5（云端）</option>
+              </select>
+            </div>
+            <div v-if="generationProvider === 'spark'">
+              <div class="text-xs text-slate-500 mb-1">思考模式</div>
+              <select v-model="sparkThinking" class="w-full input-glass rounded-lg px-3 py-2 text-sm" :disabled="isCreating">
+                <option value="enabled">开启（更强推理）</option>
+                <option value="auto">自动</option>
+                <option value="disabled">关闭（更快）</option>
+              </select>
             </div>
           </div>
 

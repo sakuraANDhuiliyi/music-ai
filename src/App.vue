@@ -5,6 +5,7 @@ import Navbar from './components/Navbar.vue';
 import LoadingOverlay from './components/LoadingOverlay.vue';
 import AuroraBackground from './components/AuroraBackground.vue';
 import MusicPlayer from '@/components/Music/index.vue';
+import AiAssistantModal from './components/AiAssistantModal.vue';
 import { useLoader } from './composables/useLoader.js';
 import { useUser, authFetch } from './composables/useUser.js';
 import { fetchCached } from './utils/resourceCache.js';
@@ -12,6 +13,7 @@ const route = useRoute();
 const { isLoading } = useLoader();
 const { user } = useUser();
 const showNavbar = computed(() => !route.meta?.hideNavbar);
+const isAiOpen = ref(false);
 
 const lastPrefetchAt = ref(0);
 const prefetchPublic = async () => {
@@ -124,6 +126,44 @@ watch(
         </transition>
       </router-view>
     </main>
+    <button class="ai-fab" @click="isAiOpen = true">
+      <i class="ph-bold ph-sparkle"></i>
+      AI 助手
+    </button>
+    <AiAssistantModal v-model:open="isAiOpen" />
     <MusicPlayer />
   </div>
 </template>
+
+<style scoped>
+.ai-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 24px;
+  z-index: 55;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: none;
+  color: white;
+  font-weight: 700;
+  background: linear-gradient(135deg, rgb(34, 199, 184), rgb(245, 178, 74));
+  box-shadow: 0 18px 40px -25px rgba(17, 20, 24, 0.35);
+  cursor: pointer;
+}
+
+.ai-fab:hover {
+  transform: translateY(-1px);
+}
+
+@media (max-width: 640px) {
+  .ai-fab {
+    right: 14px;
+    bottom: 16px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+}
+</style>

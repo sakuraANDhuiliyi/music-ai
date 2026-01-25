@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useUser, authFetch } from '../composables/useUser.js';
 import { fetchCached } from '../utils/resourceCache.js';
+import { tutorialChapters, tutorialLevels } from '../data/tutorialData.js';
 import AuroraButton from './AuroraButton.vue';
 import UiButton from './UiButton.vue';
 
@@ -363,12 +364,19 @@ const desktopLinks = computed(() => [
   { label: '素材库', name: 'Library', to: '/library' },
 ]);
 
-const tutorialLinks = computed(() => [
-  { key: 'prologue', label: '序章', to: '/tutorial/prologue' },
-  { key: 'chapter-1', label: '第一章', to: '/tutorial/chapter-1' },
-  { key: 'chapter-2', label: '第二章', to: '/tutorial/chapter-2' },
-  { key: 'practice', label: '练习', to: '/tutorial/practice' },
-]);
+const tutorialGroups = computed(() =>
+  tutorialLevels.map((level) => ({
+    key: level.key,
+    label: level.label,
+    items: tutorialChapters
+      .filter((chapter) => chapter.level === level.key)
+      .map((chapter) => ({
+        key: chapter.slug,
+        label: chapter.title,
+        to: `/tutorial/${chapter.slug}`,
+      })),
+  }))
+);
 
 const moreLinks = computed(() => [
   { label: 'AI 和弦', name: 'AiChordCreator', to: '/ai-chord', icon: 'ph-bold ph-magic-wand' },
@@ -518,18 +526,23 @@ watch(
             教程 <i class="ph-bold ph-caret-down text-sm"></i>
           </button>
 
-          <div v-if="isTutorialOpen" class="absolute left-0 mt-2 w-56 glass-card rounded-2xl border border-white/70 overflow-hidden shadow-xl" role="menu">
-            <button
-              v-for="item in tutorialLinks"
-              :key="item.key"
-              type="button"
-              role="menuitem"
-              class="w-full px-4 py-3 text-sm font-semibold text-left flex items-center gap-3 hover:bg-white/35 transition"
-              @click="closeAllMenus(); router.push(item.to)"
-            >
-              <i class="ph-bold ph-book-open text-slate-500"></i>
-              <span>{{ item.label }}</span>
-            </button>
+          <div v-if="isTutorialOpen" class="absolute left-0 mt-2 w-64 glass-card rounded-2xl border border-white/70 overflow-hidden shadow-xl" role="menu">
+            <div v-for="group in tutorialGroups" :key="group.key" class="border-b border-white/50 last:border-b-0">
+              <div class="px-4 py-2 text-xs font-semibold text-slate-500 bg-white/60">
+                {{ group.label }}
+              </div>
+              <button
+                v-for="item in group.items"
+                :key="item.key"
+                type="button"
+                role="menuitem"
+                class="w-full px-4 py-3 text-sm font-semibold text-left flex items-center gap-3 hover:bg-white/35 transition"
+                @click="closeAllMenus(); router.push(item.to)"
+              >
+                <i class="ph-bold ph-book-open text-slate-500"></i>
+                <span>{{ item.label }}</span>
+              </button>
+            </div>
           </div>
         </div>
 

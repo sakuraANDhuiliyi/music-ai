@@ -7,3 +7,5 @@ python: python -m venv .venv
 .venv\Scripts\activate
 
  uvicorn app:app --host 127.0.0.1 --port 8001
+
+ uvicorn roman_service:app --host 127.0.0.1 --port 8001

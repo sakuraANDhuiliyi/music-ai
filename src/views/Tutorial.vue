@@ -2,41 +2,41 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import UiButton from '../components/UiButton.vue';
+import MiniPiano from '../components/Tutorial/MiniPiano.vue';
+import Metronome from '../components/Tutorial/Metronome.vue';
+import IntervalTrainer from '../components/Tutorial/IntervalTrainer.vue';
+import ChordTrainer from '../components/Tutorial/ChordTrainer.vue';
+import ProgressionBuilder from '../components/Tutorial/ProgressionBuilder.vue';
+import PracticeQuiz from '../components/Tutorial/PracticeQuiz.vue';
+import { tutorialChapters, tutorialLevels } from '../data/tutorialData.js';
 
 const route = useRoute();
 const router = useRouter();
 
-const lessons = [
-  {
-    key: 'prologue',
-    title: '序章：认识 MuseAI',
-    desc: '快速了解首页、社区与 Studio 的核心流程，建议首次使用先看本章。',
-    goals: ['理解页面结构与入口', '学会创建工程', '学会保存草稿与导出'],
-  },
-  {
-    key: 'chapter-1',
-    title: '第一章：从灵感到草稿',
-    desc: '从和弦/旋律出发搭建第一版结构，并使用多轨编辑器完成基础编排。',
-    goals: ['快速搭建段落结构', '掌握多轨剪辑与对齐', '为后续混音留出空间'],
-  },
-  {
-    key: 'chapter-2',
-    title: '第二章：细化与混音',
-    desc: '在多轨工程中进行音色选择、效果链与简单混音，让作品更“站得住”。',
-    goals: ['了解常用 FX 的使用顺序', '控制响度与动态', '导出并发布到社区'],
-  },
-  {
-    key: 'practice',
-    title: '练习：跟做小项目',
-    desc: '提供一套可复用的练习流程，建议边做边保存草稿，逐步形成自己的模板。',
-    goals: ['完成一个 30 秒片段', '至少使用 1 个 FX', '发布并获得反馈'],
-  },
-];
+const slug = computed(() => String(route.params?.slug || tutorialChapters[0].slug).trim() || tutorialChapters[0].slug);
+const currentChapter = computed(() => tutorialChapters.find((item) => item.slug === slug.value) || tutorialChapters[0]);
 
-const slug = computed(() => String(route.params?.slug || 'prologue').trim() || 'prologue');
-const currentLesson = computed(() => lessons.find((item) => item.key === slug.value) || lessons[0]);
+const chaptersByLevel = computed(() => {
+  return tutorialLevels.map((level) => ({
+    ...level,
+    chapters: tutorialChapters.filter((chapter) => chapter.level === level.key),
+  }));
+});
 
-const goToLesson = (key) => router.push(`/tutorial/${key}`);
+const componentMap = {
+  'mini-piano': MiniPiano,
+  metronome: Metronome,
+  'interval-trainer': IntervalTrainer,
+  'chord-trainer': ChordTrainer,
+  'progression-builder': ProgressionBuilder,
+  quiz: PracticeQuiz,
+};
+
+const goToChapter = (key) => router.push(`/tutorial/${key}`);
+
+const currentIndex = computed(() => tutorialChapters.findIndex((item) => item.slug === currentChapter.value.slug));
+const prevChapter = computed(() => tutorialChapters[currentIndex.value - 1] || null);
+const nextChapter = computed(() => tutorialChapters[currentIndex.value + 1] || null);
 </script>
 
 <template>
@@ -54,10 +54,10 @@ const goToLesson = (key) => router.push(`/tutorial/${key}`);
               教程中心
             </div>
             <h1 class="mt-4 font-display text-3xl sm:text-4xl font-extrabold text-slate-900 leading-tight">
-              {{ currentLesson.title }}
+              {{ currentChapter.title }}
             </h1>
             <p class="mt-3 text-slate-600 text-sm sm:text-base leading-relaxed">
-              {{ currentLesson.desc }}
+              {{ currentChapter.summary }}
             </p>
           </div>
 
@@ -72,25 +72,28 @@ const goToLesson = (key) => router.push(`/tutorial/${key}`);
         </div>
       </section>
 
-      <section class="grid grid-cols-1 lg:grid-cols-[300px,1fr] gap-6 items-start">
+      <section class="grid grid-cols-1 lg:grid-cols-[320px,1fr] gap-6 items-start">
         <aside class="glass-card rounded-3xl border border-white/70 p-5">
           <div class="flex items-center justify-between">
             <div class="text-sm font-extrabold text-slate-900">目录</div>
-            <div class="text-xs text-slate-500 font-semibold">共 {{ lessons.length }} 篇</div>
+            <div class="text-xs text-slate-500 font-semibold">共 {{ tutorialChapters.length }} 篇</div>
           </div>
 
-          <div class="mt-4 space-y-2">
-            <button
-              v-for="item in lessons"
-              :key="item.key"
-              type="button"
-              class="w-full text-left px-4 py-3 rounded-2xl border border-white/70 bg-white/55 hover:bg-white/70 transition"
-              :class="item.key === slug ? 'ring-4 ring-teal-300/25' : ''"
-              @click="goToLesson(item.key)"
-            >
-              <div class="text-sm font-extrabold text-slate-900">{{ item.title }}</div>
-              <div class="mt-1 text-xs text-slate-500 font-semibold leading-snug">{{ item.desc }}</div>
-            </button>
+          <div class="mt-4 space-y-4">
+            <div v-for="group in chaptersByLevel" :key="group.key" class="space-y-2">
+              <div class="text-xs font-semibold text-slate-500">{{ group.label }}</div>
+              <button
+                v-for="item in group.chapters"
+                :key="item.slug"
+                type="button"
+                class="w-full text-left px-4 py-3 rounded-2xl border border-white/70 bg-white/55 hover:bg-white/70 transition"
+                :class="item.slug === slug ? 'ring-4 ring-teal-300/25' : ''"
+                @click="goToChapter(item.slug)"
+              >
+                <div class="text-sm font-extrabold text-slate-900">{{ item.title }}</div>
+                <div class="mt-1 text-xs text-slate-500 font-semibold leading-snug">{{ item.summary }}</div>
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -100,12 +103,12 @@ const goToLesson = (key) => router.push(`/tutorial/${key}`);
               <div class="text-xs font-semibold text-slate-500">本章目标</div>
               <h2 class="mt-2 text-xl font-extrabold text-slate-900">你将学会什么</h2>
             </div>
-            <div class="text-xs text-slate-500 font-semibold">内容可后续逐章完善</div>
+            <div class="text-xs text-slate-500 font-semibold">建议完成后做一次练习</div>
           </div>
 
           <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div
-              v-for="goal in currentLesson.goals"
+              v-for="goal in currentChapter.goals"
               :key="goal"
               class="rounded-2xl border border-white/70 bg-white/60 p-4"
             >
@@ -114,14 +117,78 @@ const goToLesson = (key) => router.push(`/tutorial/${key}`);
             </div>
           </div>
 
-          <div class="mt-6 rounded-3xl border border-white/70 bg-white/55 p-5">
-            <div class="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-              <i class="ph-bold ph-info text-amber-600"></i>
-              提示
-            </div>
-            <div class="mt-2 text-sm text-slate-600 leading-relaxed">
-              这里先提供教程框架与导航结构；具体图文/视频内容你确认目录与章节命名后，我再按你的素材逐章补全。
-            </div>
+          <div class="mt-8 space-y-8">
+            <section v-for="section in currentChapter.sections" :key="section.title" class="space-y-3">
+              <h3 class="text-lg font-extrabold text-slate-900">{{ section.title }}</h3>
+              <div class="space-y-3 text-sm text-slate-600 leading-relaxed">
+                <p v-for="(p, idx) in section.paragraphs" :key="`${section.title}-p-${idx}`">{{ p }}</p>
+                <ul v-if="section.bullets" class="list-disc pl-5 space-y-1">
+                  <li v-for="(b, idx) in section.bullets" :key="`${section.title}-b-${idx}`">{{ b }}</li>
+                </ul>
+              </div>
+            </section>
+
+            <section class="space-y-4">
+              <h3 class="text-lg font-extrabold text-slate-900">实操与练习</h3>
+              <div class="grid grid-cols-1 gap-4">
+                <div
+                  v-for="(practice, idx) in currentChapter.practices"
+                  :key="`${practice.title}-${idx}`"
+                  class="rounded-3xl border border-white/70 bg-white/65 p-5"
+                >
+                  <div class="flex items-start justify-between gap-4">
+                    <div>
+                      <div class="text-sm font-extrabold text-slate-900">{{ practice.title }}</div>
+                      <div v-if="practice.description" class="mt-1 text-xs text-slate-500 font-semibold">
+                        {{ practice.description }}
+                      </div>
+                    </div>
+                    <div class="text-xs text-slate-400 font-semibold">练习 {{ idx + 1 }}</div>
+                  </div>
+
+                  <div v-if="practice.steps?.length" class="mt-3 text-xs text-slate-600">
+                    <div class="font-semibold text-slate-500">练习步骤</div>
+                    <ol class="list-decimal pl-4 mt-2 space-y-1">
+                      <li v-for="(step, sIdx) in practice.steps" :key="`${practice.title}-s-${sIdx}`">{{ step }}</li>
+                    </ol>
+                  </div>
+
+                  <div class="mt-4">
+                    <component
+                      :is="componentMap[practice.type]"
+                      v-bind="practice.props"
+                      v-if="componentMap[practice.type]"
+                      :questions="practice.questions"
+                      :question="practice.question"
+                      :options="practice.options"
+                      :answer-index="practice.answerIndex"
+                      :explanation="practice.explanation"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="mt-8 flex flex-wrap items-center justify-between gap-3">
+            <UiButton
+              v-if="prevChapter"
+              variant="secondary"
+              class="px-5 py-2 rounded-full text-sm font-semibold"
+              @click="goToChapter(prevChapter.slug)"
+            >
+              <i class="ph-bold ph-arrow-left"></i>
+              上一章：{{ prevChapter.title }}
+            </UiButton>
+            <UiButton
+              v-if="nextChapter"
+              variant="primary"
+              class="px-5 py-2 rounded-full text-sm font-semibold text-white"
+              @click="goToChapter(nextChapter.slug)"
+            >
+              下一章：{{ nextChapter.title }}
+              <i class="ph-bold ph-arrow-right"></i>
+            </UiButton>
           </div>
         </main>
       </section>
