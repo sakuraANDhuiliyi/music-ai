@@ -8,6 +8,8 @@ import fs from 'fs';
 import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import jwt from 'jsonwebtoken'; // [新增]
 import crypto from 'crypto';
 import WebSocket from 'ws';
@@ -33,6 +35,7 @@ const SERVER_CONFIG = {
     musicApiBase: process.env.MUSIC_API_BASE || 'http://mrzym.top:3000',
     musicApiBases: process.env.MUSIC_API_BASES || '',
     musicProxyTimeoutMs: Number(process.env.MUSIC_PROXY_TIMEOUT_MS || 25000),
+    mgMusicApiBase: process.env.MG_MUSIC_API_BASE || 'https://s7.ecylt.top/v1/mg_music',
     chordServiceUrl: process.env.AI_CHORD_SERVICE_URL || '',
     ai: {
         apiKey: process.env.AI_API_KEY || '',
@@ -61,6 +64,7 @@ const MUSIC_API_BASES = String(SERVER_CONFIG.musicApiBases || '')
     .split(',')
     .map((x) => String(x || '').trim())
     .filter(Boolean);
+const MG_MUSIC_API_BASE = String(SERVER_CONFIG.mgMusicApiBase || 'https://s7.ecylt.top/v1/mg_music');
 const MUSIC_PROXY_TIMEOUT_MS = Number.isFinite(SERVER_CONFIG.musicProxyTimeoutMs) && SERVER_CONFIG.musicProxyTimeoutMs > 0
     ? SERVER_CONFIG.musicProxyTimeoutMs
     : 25000;
@@ -93,6 +97,38 @@ const DEFAULT_MESSAGE_SETTINGS = Object.freeze({
     likes: true,
     system: true,
 });
+
+const PASSWORD_PREFIX = 'scrypt$';
+const hashPassword = (plain) => {
+    const salt = crypto.randomBytes(16);
+    const hash = crypto.scryptSync(String(plain || ''), salt, 64);
+    return `${PASSWORD_PREFIX}${salt.toString('hex')}$${hash.toString('hex')}`;
+};
+const isHashedPassword = (stored) => String(stored || '').startsWith(PASSWORD_PREFIX);
+const verifyPassword = (plain, stored) => {
+    const raw = String(stored || '');
+    const input = String(plain || '');
+    if (!raw) return false;
+
+    if (raw.startsWith(PASSWORD_PREFIX)) {
+        const parts = raw.split('$');
+        if (parts.length !== 3) return false;
+        const saltHex = parts[1] || '';
+        const hashHex = parts[2] || '';
+        if (!saltHex || !hashHex) return false;
+        const salt = Buffer.from(saltHex, 'hex');
+        const expected = Buffer.from(hashHex, 'hex');
+        const derived = crypto.scryptSync(input, salt, expected.length);
+        try {
+            return crypto.timingSafeEqual(expected, derived);
+        } catch {
+            return false;
+        }
+    }
+
+    // legacy plaintext (兼容旧数据)：匹配成功后会在登录时自动升级为哈希
+    return raw === input;
+};
 
 const normalizeMessageSettings = (settings) => ({
     ...DEFAULT_MESSAGE_SETTINGS,
@@ -1508,8 +1544,43 @@ const audioUpload = multer({
 // 数据库连接
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) { console.error('❌ 未找到 MONGO_URI'); process.exit(1); }
+
+const SUPER_ADMIN_EMAIL = String(process.env.SUPER_ADMIN_EMAIL || '').trim();
+const SUPER_ADMIN_PASSWORD = String(process.env.SUPER_ADMIN_PASSWORD || '').trim();
+const SUPER_ADMIN_USERNAME = String(process.env.SUPER_ADMIN_USERNAME || 'Super Admin').trim() || 'Super Admin';
+
+const ensureSuperAdmin = async () => {
+    if (!SUPER_ADMIN_EMAIL || !SUPER_ADMIN_PASSWORD) return;
+
+    const existing = await User.findOne({ email: SUPER_ADMIN_EMAIL });
+    if (!existing) {
+        const superAdmin = new User({
+            email: SUPER_ADMIN_EMAIL,
+            password: hashPassword(SUPER_ADMIN_PASSWORD),
+            username: SUPER_ADMIN_USERNAME,
+            role: 'superadmin',
+        });
+        await superAdmin.save();
+        console.log(`✅ Super Admin created: ${SUPER_ADMIN_EMAIL}`);
+        return;
+    }
+
+    if (existing.role !== 'superadmin') {
+        existing.role = 'superadmin';
+        await existing.save();
+        console.log(`✅ Super Admin promoted: ${SUPER_ADMIN_EMAIL}`);
+    }
+};
+
 mongoose.connect(MONGO_URI)
-    .then(() => console.log('✅ MongoDB Atlas Connected'))
+    .then(async () => {
+        console.log('✅ MongoDB Atlas Connected');
+        try {
+            await ensureSuperAdmin();
+        } catch (err) {
+            console.error('❌ Super Admin init failed:', err);
+        }
+    })
     .catch(err => console.error('❌ MongoDB Error:', err));
 
 
@@ -1540,14 +1611,14 @@ const optionalAuth = async (req, res, next) => {
     }
     next();
 };
-// 2. 管理员验证 (Token + Role)
-const adminAuth = async (req, res, next) => {
+
+const requireRole = (...roles) => async (req, res, next) => {
     // 先验证 Token，再从数据库确认角色，避免旧 Token 里角色过期
     await auth(req, res, async () => {
         try {
             const dbUser = await User.findById(req.user.uid);
             if (!dbUser) return res.status(401).json({ message: '用户不存在' });
-            if (dbUser.role !== 'admin') return res.status(403).json({ message: '需要管理员权限' });
+            if (!roles.includes(dbUser.role)) return res.status(403).json({ message: '权限不足' });
             // 覆盖为数据库中的最新角色信息
             req.user.role = dbUser.role;
             next();
@@ -1556,6 +1627,10 @@ const adminAuth = async (req, res, next) => {
         }
     });
 };
+
+// 2. 管理员验证 (Token + Role)
+const adminAuth = requireRole('admin', 'superadmin');
+const superAdminAuth = requireRole('superadmin');
 // ================= API 路由 =================
 // --- 认证 Auth ---
 app.post('/api/register', async (req, res) => {
@@ -1563,7 +1638,7 @@ app.post('/api/register', async (req, res) => {
         const { email, password, username } = req.body;
         if (await User.findOne({ email })) return res.status(400).json({ message: '邮箱已注册' });
 
-        const newUser = new User({ email, password, username });
+        const newUser = new User({ email, password: hashPassword(password), username });
         await newUser.save();
 
         // 生成 Token
@@ -1576,8 +1651,19 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email, password });
+        const user = await User.findOne({ email });
         if (!user) return res.status(401).json({ message: '账号或密码错误' });
+        if (!verifyPassword(password, user.password)) return res.status(401).json({ message: '账号或密码错误' });
+
+        // 登录时自动升级旧的明文密码为哈希
+        if (!isHashedPassword(user.password) && String(user.password || '') === String(password || '')) {
+            try {
+                user.password = hashPassword(password);
+                await user.save();
+            } catch {
+                // ignore upgrade errors
+            }
+        }
 
         // 生成 Token
         const token = jwt.sign({ uid: user._id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -2549,6 +2635,62 @@ app.post('/api/upload/audio', auth, audioUpload.single('file'), (req, res) => {
     });
 });
 
+// --- MG Music Proxy (search/detail/stream) ---
+app.get('/api/mg-music', async (req, res) => {
+    try {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(req.query || {})) {
+            if (value === undefined || value === null) continue;
+            params.set(key, String(value));
+        }
+        const target = `${MG_MUSIC_API_BASE}?${params.toString()}`;
+        const upstream = await fetch(target, { method: 'GET' });
+        const text = await upstream.text();
+        res.status(upstream.status);
+        res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+        return res.send(text);
+    } catch (err) {
+        return res.status(502).json({ message: '歌曲接口不可用' });
+    }
+});
+
+app.get('/api/mg-music/stream', async (req, res) => {
+    try {
+        const rawUrl = String(req.query?.url || '').trim();
+        if (!rawUrl) return res.status(400).json({ message: '缺少音频地址' });
+        if (!/^https?:\/\//i.test(rawUrl)) return res.status(400).json({ message: '非法音频地址' });
+
+        const allowHost = /(^|\.)migu\.cn$/i;
+        let host = '';
+        try {
+            host = new URL(rawUrl).hostname || '';
+        } catch {
+            return res.status(400).json({ message: '非法音频地址' });
+        }
+        if (!allowHost.test(host)) return res.status(403).json({ message: '不允许的音频来源' });
+
+        const headers = {
+            'User-Agent': req.get('user-agent') || 'Mozilla/5.0',
+        };
+        const range = req.headers.range;
+        if (range) headers.Range = range;
+
+        const upstream = await fetch(rawUrl, { method: 'GET', headers });
+        res.status(upstream.status);
+        const passthroughHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range'];
+        passthroughHeaders.forEach((h) => {
+            const v = upstream.headers.get(h);
+            if (v) res.setHeader(h, v);
+        });
+
+        if (!upstream.body) return res.end();
+        const readable = Readable.fromWeb(upstream.body);
+        await pipeline(readable, res);
+    } catch (err) {
+        return res.status(502).json({ message: '音频转发失败' });
+    }
+});
+
 // --- Music Proxy (NetEase API) ---
 // Note: use prefix middleware to avoid path-to-regexp wildcard incompatibilities.
 app.get('/api/music-proxy/status', (req, res) => {
@@ -2791,14 +2933,169 @@ app.get('/api/admin/stats', adminAuth, async (req, res) => {
     res.json({ userCount, projectCount, commentCount });
 });
 app.get('/api/admin/users', adminAuth, async (req, res) => {
-    const users = await User.find().sort({ createdAt: -1 });
+    // Admin 默认只管理普通用户，避免误操作管理员账号
+    const users = await User.find({ role: 'user' })
+        .select('email username avatar bio role createdAt')
+        .sort({ createdAt: -1 });
     res.json(users);
 });
+app.get('/api/admin/users/all', superAdminAuth, async (req, res) => {
+    // 超级管理员可查看所有注册信息（不包含密码等敏感字段）
+    const users = await User.find({ role: { $in: ['user', 'admin', 'superadmin'] } })
+        .select('email username avatar bio role createdAt')
+        .sort({ createdAt: -1 });
+    res.json(users);
+});
+app.get('/api/admin/admins', superAdminAuth, async (req, res) => {
+    const admins = await User.find({ role: 'admin' })
+        .select('email username avatar bio role createdAt')
+        .sort({ createdAt: -1 });
+    res.json(admins);
+});
+app.post('/api/admin/users', adminAuth, async (req, res) => {
+    try {
+        const requesterRole = String(req.user?.role || '').trim();
+        const email = String(req.body?.email || '').trim();
+        const password = String(req.body?.password || '').trim();
+        const username = String(req.body?.username || '').trim();
+        const requestedRole = String(req.body?.role || 'user').trim();
+
+        if (!email || !password || !username) return res.status(400).json({ message: '缺少必要字段' });
+        if (await User.findOne({ email })) return res.status(400).json({ message: '邮箱已注册' });
+
+        const allowedRoles = requesterRole === 'superadmin' ? ['user', 'admin'] : ['user'];
+        const role = allowedRoles.includes(requestedRole) ? requestedRole : 'user';
+
+        const newUser = new User({ email, password: hashPassword(password), username, role });
+        await newUser.save();
+        return res.status(201).json(newUser);
+    } catch (err) {
+        return res.status(500).json({ message: '创建用户失败' });
+    }
+});
+app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const requesterUid = String(req.user?.uid || '').trim();
+        const requesterRole = String(req.user?.role || '').trim();
+        const target = await User.findById(id);
+        if (!target) return res.status(404).json({ message: '用户不存在' });
+
+        if (String(target._id) === requesterUid) {
+            return res.status(403).json({ message: '不允许在后台修改自己的账号' });
+        }
+
+        // 普通管理员只允许操作普通用户
+        if (requesterRole !== 'superadmin' && target.role !== 'user') {
+            return res.status(403).json({ message: '管理员只能操作普通用户' });
+        }
+
+        // 超级管理员不允许通过此接口修改 superadmin（避免误操作锁死权限）
+        if (requesterRole === 'superadmin' && target.role === 'superadmin') {
+            return res.status(403).json({ message: '不允许修改超级管理员账号' });
+        }
+
+        const updates = req.body || {};
+
+        if (updates.email != null) {
+            const nextEmail = String(updates.email || '').trim();
+            if (!nextEmail) return res.status(400).json({ message: '邮箱不能为空' });
+            const dup = await User.findOne({ email: nextEmail, _id: { $ne: id } });
+            if (dup) return res.status(400).json({ message: '邮箱已被占用' });
+            target.email = nextEmail;
+        }
+        if (updates.username != null) {
+            const nextUsername = String(updates.username || '').trim();
+            if (!nextUsername) return res.status(400).json({ message: '用户名不能为空' });
+            target.username = nextUsername;
+        }
+        if (updates.avatar != null) target.avatar = String(updates.avatar || '').trim();
+        if (updates.bio != null) target.bio = String(updates.bio || '').trim();
+        if (updates.password != null) {
+            const nextPwd = String(updates.password || '').trim();
+            if (nextPwd.length < 4) return res.status(400).json({ message: '密码太短' });
+            target.password = hashPassword(nextPwd);
+        }
+
+        // 仅超级管理员可改角色（只能 user/admin）
+        if (requesterRole === 'superadmin' && updates.role != null) {
+            const nextRole = String(updates.role || '').trim();
+            if (!['user', 'admin'].includes(nextRole)) {
+                return res.status(400).json({ message: '不支持的角色' });
+            }
+            target.role = nextRole;
+        }
+
+        await target.save();
+        return res.json(target);
+    } catch (err) {
+        return res.status(500).json({ message: '更新用户失败' });
+    }
+});
 app.delete('/api/admin/users/:id', adminAuth, async (req, res) => {
-    await User.findByIdAndDelete(req.params.id);
-    await Project.deleteMany({ author: req.params.id });
-    await Comment.deleteMany({ author: req.params.id });
+    const id = String(req.params.id || '').trim();
+    if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid user id' });
+
+    const requesterUid = String(req.user?.uid || '').trim();
+    const requesterRole = String(req.user?.role || '').trim();
+    const target = await User.findById(id).select('role');
+    if (!target) return res.status(404).json({ message: '用户不存在' });
+
+    if (String(target._id) === requesterUid) {
+        return res.status(403).json({ message: '不允许删除自己的账号' });
+    }
+
+    if (requesterRole !== 'superadmin') {
+        if (target.role !== 'user') return res.status(403).json({ message: '管理员只能删除普通用户' });
+    } else {
+        if (target.role === 'superadmin') return res.status(403).json({ message: '不允许删除超级管理员账号' });
+    }
+
+    await User.findByIdAndDelete(id);
+    await Project.deleteMany({ author: id });
+    await Comment.deleteMany({ author: id });
     res.json({ success: true });
+});
+app.post('/api/admin/users/:id/reset-password', adminAuth, async (req, res) => {
+    try {
+        const id = String(req.params.id || '').trim();
+        if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid user id' });
+
+        const requesterRole = String(req.user?.role || '').trim();
+        const target = await User.findById(id).select('role');
+        if (!target) return res.status(404).json({ message: '用户不存在' });
+
+        if (target.role === 'superadmin') return res.status(403).json({ message: '不允许重置超级管理员密码' });
+        if (target.role === 'admin' && requesterRole !== 'superadmin') {
+            return res.status(403).json({ message: '仅超级管理员可重置管理员密码' });
+        }
+        if (target.role === 'user' || target.role === 'admin') {
+            // ok
+        } else {
+            return res.status(400).json({ message: '不支持的账号类型' });
+        }
+
+        const requested = String(req.body?.password || '').trim();
+        const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+        const gen = (len = 12) => {
+            const bytes = crypto.randomBytes(len);
+            let out = '';
+            for (let i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+            return out;
+        };
+        const nextPassword = requested || gen(12);
+        if (nextPassword.length < 4) return res.status(400).json({ message: '密码太短' });
+
+        target.password = hashPassword(nextPassword);
+        await target.save();
+
+        // 只返回一次明文（用于管理员通知用户/分发临时密码）
+        return res.json({ success: true, password: nextPassword });
+    } catch (err) {
+        return res.status(500).json({ message: '重置密码失败' });
+    }
 });
 app.get('/api/admin/projects', adminAuth, async (req, res) => {
     const projects = await Project.find().populate('author', 'username email').sort({ createdAt: -1 });
@@ -2850,12 +3147,7 @@ app.delete('/api/admin/comments/:id', adminAuth, async (req, res) => {
     await removeUploadedFiles(images);
     res.json({ success: true });
 });
-// 临时提权接口
-app.get('/api/admin/setup', async (req, res) => {
-    const { email } = req.query;
-    const user = await User.findOneAndUpdate({ email }, { role: 'admin' }, { new: true });
-    res.send(user ? `User ${user.username} is now admin` : 'User not found');
-});
+// （已移除）临时提权接口：避免未授权的角色提升风险
 // --- 社区业务 (通知、作品、评论) ---
 app.get('/api/notifications', auth, async (req, res) => {
     const blockedIds = await getBlockedUserIdsFor(req.user.uid);

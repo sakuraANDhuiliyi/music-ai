@@ -381,6 +381,7 @@ const tutorialGroups = computed(() =>
 const moreLinks = computed(() => [
   { label: 'AI 和弦', name: 'AiChordCreator', to: '/ai-chord', icon: 'ph-bold ph-magic-wand' },
   { label: '音频转谱', name: 'AudioToSheet', to: '/audio-to-sheet', icon: 'ph-bold ph-waveform' },
+  { label: '歌曲片段', name: 'MusicClipper', to: '/music-clipper', icon: 'ph-bold ph-scissors' },
   { label: '弹奏乐器', name: 'PianoPlay', to: '/piano', icon: 'ph-bold ph-piano-keys' },
   { label: '每日推荐', name: 'DailyRecommendations', to: '/daily', icon: 'ph-bold ph-sparkle' },
 ]);

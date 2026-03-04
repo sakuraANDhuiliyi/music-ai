@@ -10,6 +10,7 @@ import Profile from '../views/Profile.vue'
 import Notification from '../views/Notifications.vue'
 import Admin from '../views/Admin.vue'
 import AudioToSheet from '../views/AudioToSheet.vue'
+import MusicClipper from '../views/MusicClipper.vue'
 import PianoPlay from '../views/PianoPlay.vue'
 import AiChordCreator from '../views/AiChordCreator.vue'
 import DailyRecommendations from '../views/DailyRecommendations.vue'
@@ -18,6 +19,7 @@ import UserSpace from '../views/UserSpace.vue'
 import PostDetail from '../views/PostDetail.vue'
 import Tutorial from '../views/Tutorial.vue'
 import { useLoader } from '../composables/useLoader.js'
+import { authUser, ensureAuthReady } from '../composables/useUser.js'
 const routes = [
     { path: '/', name: 'Home', component: Home },
     { path: '/studio/:projectId?', name: 'Studio', component: Studio },
@@ -32,6 +34,7 @@ const routes = [
     { path: '/ai-chord', name: 'AiChordCreator', component: AiChordCreator },
     { path: '/search', name: 'Search', component: Search, meta: { keepAlive: true } },
     { path: '/audio-to-sheet', name: 'AudioToSheet', component: AudioToSheet },
+    { path: '/music-clipper', name: 'MusicClipper', component: MusicClipper },
     { path: '/piano', name: 'PianoPlay', component: PianoPlay },
     { path: '/login', name: 'Login', component: Auth, props: { initialType: 'login' } },
     { path: '/register', name: 'Register', component: Auth, props: { initialType: 'register' } },
@@ -67,6 +70,37 @@ router.beforeEach((to, from, next) => {
     }
     if (loadingTimer) clearTimeout(loadingTimer)
     loadingTimer = setTimeout(() => showLoading(), 120)
+
+    // 管理员页：在真正跳转前拦截，避免先进入再拒绝造成信息泄露
+    if (to?.name === 'Admin') {
+        ensureAuthReady()
+            .then(() => {
+                const role = authUser.value?.role
+                const allowed = role === 'admin' || role === 'superadmin'
+                if (!allowed) {
+                    if (loadingTimer) {
+                        clearTimeout(loadingTimer)
+                        loadingTimer = null
+                    }
+                    hideLoading()
+                    // 站内跳转：直接取消，表现为“无响应”
+                    if (from?.name) return next(false)
+                    // 直接访问 /admin：重定向到首页
+                    return next('/')
+                }
+                return next()
+            })
+            .catch(() => {
+                if (loadingTimer) {
+                    clearTimeout(loadingTimer)
+                    loadingTimer = null
+                }
+                hideLoading()
+                if (from?.name) return next(false)
+                return next('/')
+            })
+        return
+    }
     next()
 })
 

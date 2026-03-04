@@ -2,12 +2,16 @@
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import UiButton from '../components/UiButton.vue';
-import MiniPiano from '../components/Tutorial/MiniPiano.vue';
-import Metronome from '../components/Tutorial/Metronome.vue';
+import SoundLab from '../components/Tutorial/SoundLab.vue';
+import DualViewTranslator from '../components/Tutorial/DualViewTranslator.vue';
+import PulseReactor from '../components/Tutorial/PulseReactor.vue';
+import StepSequencer from '../components/Tutorial/StepSequencer.vue';
 import IntervalTrainer from '../components/Tutorial/IntervalTrainer.vue';
+import MiniPiano from '../components/Tutorial/MiniPiano.vue';
 import ChordTrainer from '../components/Tutorial/ChordTrainer.vue';
 import ProgressionBuilder from '../components/Tutorial/ProgressionBuilder.vue';
-import PracticeQuiz from '../components/Tutorial/PracticeQuiz.vue';
+import ChordColorLab from '../components/Tutorial/ChordColorLab.vue';
+import ReharmonizerLab from '../components/Tutorial/ReharmonizerLab.vue';
 import { tutorialChapters, tutorialLevels } from '../data/tutorialData.js';
 
 const route = useRoute();
@@ -24,12 +28,16 @@ const chaptersByLevel = computed(() => {
 });
 
 const componentMap = {
-  'mini-piano': MiniPiano,
-  metronome: Metronome,
+  'sound-lab': SoundLab,
+  'dual-view-translator': DualViewTranslator,
+  'pulse-reactor': PulseReactor,
+  'step-sequencer': StepSequencer,
   'interval-trainer': IntervalTrainer,
+  'mini-piano': MiniPiano,
   'chord-trainer': ChordTrainer,
   'progression-builder': ProgressionBuilder,
-  quiz: PracticeQuiz,
+  'chord-color-lab': ChordColorLab,
+  'reharmonizer-lab': ReharmonizerLab,
 };
 
 const goToChapter = (key) => router.push(`/tutorial/${key}`);
@@ -103,7 +111,7 @@ const nextChapter = computed(() => tutorialChapters[currentIndex.value + 1] || n
               <div class="text-xs font-semibold text-slate-500">本章目标</div>
               <h2 class="mt-2 text-xl font-extrabold text-slate-900">你将学会什么</h2>
             </div>
-            <div class="text-xs text-slate-500 font-semibold">建议完成后做一次练习</div>
+            <div class="text-xs text-slate-500 font-semibold">建议结合 Studio 实践</div>
           </div>
 
           <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -113,7 +121,7 @@ const nextChapter = computed(() => tutorialChapters[currentIndex.value + 1] || n
               class="rounded-2xl border border-white/70 bg-white/60 p-4"
             >
               <div class="text-sm font-extrabold text-slate-900">{{ goal }}</div>
-              <div class="mt-2 text-xs text-slate-500 font-semibold">建议：看完后在 Studio 里跟做一遍</div>
+              <div class="mt-2 text-xs text-slate-500 font-semibold">建议：在 Studio 里对应操作一次</div>
             </div>
           </div>
 
@@ -126,48 +134,28 @@ const nextChapter = computed(() => tutorialChapters[currentIndex.value + 1] || n
                   <li v-for="(b, idx) in section.bullets" :key="`${section.title}-b-${idx}`">{{ b }}</li>
                 </ul>
               </div>
-            </section>
 
-            <section class="space-y-4">
-              <h3 class="text-lg font-extrabold text-slate-900">实操与练习</h3>
-              <div class="grid grid-cols-1 gap-4">
-                <div
-                  v-for="(practice, idx) in currentChapter.practices"
-                  :key="`${practice.title}-${idx}`"
-                  class="rounded-3xl border border-white/70 bg-white/65 p-5"
-                >
-                  <div class="flex items-start justify-between gap-4">
-                    <div>
-                      <div class="text-sm font-extrabold text-slate-900">{{ practice.title }}</div>
-                      <div v-if="practice.description" class="mt-1 text-xs text-slate-500 font-semibold">
-                        {{ practice.description }}
-                      </div>
+              <div v-if="section.widget" class="mt-4 rounded-3xl border border-white/70 bg-white/70 p-4">
+                <div class="flex items-start justify-between gap-4">
+                  <div>
+                    <div class="text-sm font-extrabold text-slate-900">{{ section.widget.title }}</div>
+                    <div v-if="section.widget.description" class="mt-1 text-xs text-slate-500 font-semibold">
+                      {{ section.widget.description }}
                     </div>
-                    <div class="text-xs text-slate-400 font-semibold">练习 {{ idx + 1 }}</div>
                   </div>
+                  <div class="text-xs text-slate-400 font-semibold">交互实验</div>
+                </div>
 
-                  <div v-if="practice.steps?.length" class="mt-3 text-xs text-slate-600">
-                    <div class="font-semibold text-slate-500">练习步骤</div>
-                    <ol class="list-decimal pl-4 mt-2 space-y-1">
-                      <li v-for="(step, sIdx) in practice.steps" :key="`${practice.title}-s-${sIdx}`">{{ step }}</li>
-                    </ol>
-                  </div>
-
-                  <div class="mt-4">
-                    <component
-                      :is="componentMap[practice.type]"
-                      v-bind="practice.props"
-                      v-if="componentMap[practice.type]"
-                      :questions="practice.questions"
-                      :question="practice.question"
-                      :options="practice.options"
-                      :answer-index="practice.answerIndex"
-                      :explanation="practice.explanation"
-                    />
-                  </div>
+                <div class="mt-4">
+                  <component
+                    :is="componentMap[section.widget.type]"
+                    v-if="componentMap[section.widget.type]"
+                    v-bind="section.widget.props"
+                  />
                 </div>
               </div>
             </section>
+
           </div>
 
           <div class="mt-8 flex flex-wrap items-center justify-between gap-3">

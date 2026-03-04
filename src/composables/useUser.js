@@ -70,6 +70,10 @@ export const ensureAuthReady = () => {
     return authInitPromise;
 };
 
+// 供 Router / Navbar 等在组件外使用（避免重复请求）
+export const authUser = user;
+export const authReady = isAuthReady;
+
 // 尽早恢复登录状态，减少刷新时的闪屏/误跳转
 try {
     if (typeof window !== 'undefined') ensureAuthReady();

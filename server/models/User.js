@@ -7,7 +7,7 @@ const UserSchema = new mongoose.Schema({
     username: { type: String, required: true },
     avatar: { type: String, default: '' },
     bio: { type: String, default: '' },
-    role: { type: String, default: 'user', enum: ['user', 'admin'] },
+    role: { type: String, default: 'user', enum: ['user', 'admin', 'superadmin'] },
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', default: [] }],
     blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', default: [] }],
     customEmojis: {
